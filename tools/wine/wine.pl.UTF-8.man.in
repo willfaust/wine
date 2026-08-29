@@ -258,9 +258,9 @@ jest dostępna w pliku
 w głównym katalogu dystrybucyjnym źródła.
 .SH PRAWA AUTORSKIE
 .B wine
-może być rozpowszechniane pod warunkami licencji LGPL. Kopia
+może być rozpowszechniane pod warunkami licencji GPL. Kopia
 licencji jest dostępna w pliku
-.B COPYING.LIB
+.B COPYING
 w głównym katalogu dystrybucyjnym źródła.
 .SH BŁĘDY
 .PP
