@@ -3927,6 +3927,29 @@ static NTSTATUS find_dll_file( const WCHAR *load_path, const WCHAR *libname, UNI
                 return STATUS_DLL_NOT_FOUND;
             }
             if (!open_known_dll( libname, nt_name, pwm, mapping, image_info, id )) return STATUS_SUCCESS;
+#ifdef __arm64ec__
+            /* iOS-Madeira: like Windows 10 and later, never load an application-local
+             * Universal CRT: ucrtbase.dll always comes from the system directory.
+             * The x64 emulator and Wine's ARM64EC modules import ucrtbase.dll and
+             * assume it is ARM64EC (no exit thunks for memcpy & co.). An x64
+             * ucrtbase.dll next to the exe -- the Rockstar Games Launcher ships one --
+             * was bound instead and then executed as ARM64 code (its DllMain, or
+             * user32's memcpy jumping to the module base): STATUS_ILLEGAL_INSTRUCTION.
+             * The system path below takes the usual mixed-arch fallback to sysx64. */
+            if (!wcsicmp( libname, L"ucrtbase.dll" ) || !wcsicmp( libname, L"ucrtbase" ))
+            {
+                static const WCHAR ucrtW[] = L"ucrtbase.dll";
+                SIZE_T len = wcslen( system_dir ) + ARRAY_SIZE( ucrtW );
+                if ((fullname = RtlAllocateHeap( GetProcessHeap(), 0, len * sizeof(WCHAR) )))
+                {
+                    wcscpy( fullname, system_dir );
+                    wcscat( fullname, ucrtW );
+                    ERR( "[ucrt-system] %s -> %s (application-local UCRT ignored, as on Windows 10)\n",
+                         debugstr_w(libname), debugstr_w(fullname) );
+                    libname = fullname;
+                }
+            }
+#endif
         }
     }
 
