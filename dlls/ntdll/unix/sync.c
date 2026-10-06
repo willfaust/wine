@@ -5052,19 +5052,41 @@ void ios_alert_waiter_dump(void)
  * (2-misaligned wait addrs = lock+2), and (c) is stamped by NO LIVE thread's
  * TEB Instrumentation[6] (every acquire stamps since ml446), for 3 consecutive
  * monitor cycles, has a dead owner with certainty — reap it.  The live-stamp
- * set is built by the monitor (registry + Mach liveness) and passed in. */
+ * set is built by the monitor (registry + Mach liveness) and passed in.
+ *
+ * ml1295: Ori and the Will of the Wisps crashed at a level load right after
+ * this reaped a guest SRW lock that four job threads were queued on: the loop
+ * below visits a lock once per parked waiter, so four waiters gave strikes
+ * 1, 2 and 3 in ONE check, and the lock word changed between them (00010009
+ * -> 00010007: a waiter had just been handed the lock, the owner was alive).
+ * The game's own locks are never stamped, so "no live stamp" is always true
+ * for them. Now a lock is looked at once per check; a strike counts only when
+ * the lock word is the same as at the previous strike (nothing moved); and
+ * only a lock some thread was once seen stamping (a FEX lock) is reaped. */
 void ios_orphan_check( const unsigned long long *live_stamps, int nstamps )
 {
-    static struct { unsigned long long lock; int strikes; } susp[8];
-    int i, j, k;
+    static struct { unsigned long long lock; int strikes; unsigned int word; } susp[8];
+    static unsigned long long ever_stamped[32];   /* ml1295: FEX locks seen held */
+    static int guest_lock_logs;
+    unsigned long long checked[64];
+    int i, j, k, nchecked = 0;
+    for (k = 0; k < nstamps; k++)
+    {
+        for (j = 0; j < 32 && ever_stamped[j] && ever_stamped[j] != live_stamps[k]; j++) ;
+        if (j < 32 && !ever_stamped[j]) ever_stamped[j] = live_stamps[k];
+    }
     for (i = 0; i < IOS_ALERT_WAITER_MAX; i++)
     {
         const void *a = ios_alert_waiters[i].addr;
         unsigned long long lock;
         unsigned int word;
-        int nsame = 0, stamped = 0;
+        int nsame = 0, stamped = 0, fex = 0;
         if (!a || ((ULONG_PTR)a & 3) != 2 || (ULONG_PTR)a < 0x10000 || (ULONG_PTR)a >= 0x8000000000ULL) continue;
         lock = (unsigned long long)(ULONG_PTR)a - 2;
+        for (j = 0; j < nchecked && checked[j] != lock; j++) ;
+        if (j < nchecked) continue;   /* ml1295: once per lock per check, not once per waiter */
+        if (nchecked == 64) continue;
+        checked[nchecked++] = lock;
         for (j = 0; j < IOS_ALERT_WAITER_MAX; j++)
             if (ios_alert_waiters[j].addr == a) nsame++;
         if (nsame < 3) continue;
@@ -5103,9 +5125,23 @@ void ios_orphan_check( const unsigned long long *live_stamps, int nstamps )
             continue;
         }
         for (k = 0; k < nstamps; k++) if (live_stamps[k] == lock) stamped = 1;
+        for (k = 0; k < 32 && ever_stamped[k]; k++) if (ever_stamped[k] == lock) fex = 1;
         for (j = 0; j < 8; j++) if (susp[j].lock == lock) break;
         if (stamped)
         {
+            if (j < 8) { susp[j].lock = 0; susp[j].strikes = 0; }
+            continue;
+        }
+        if (!fex)
+        {
+            /* ml1295: never seen held by FEX: the guest's own lock, whose owner is
+             * simply not FEX. Never reaped. */
+            if (guest_lock_logs < 8)
+            {
+                guest_lock_logs++;
+                dprintf( 2, "[lock-orphan] SKIP %#llx word=%08x waiters=%d: a guest lock (never stamped), not reaped rev=ml1295\n",
+                         lock, word, nsame );
+            }
             if (j < 8) { susp[j].lock = 0; susp[j].strikes = 0; }
             continue;
         }
@@ -5115,6 +5151,12 @@ void ios_orphan_check( const unsigned long long *live_stamps, int nstamps )
             if (j == 8) continue;
             susp[j].lock = lock;
             susp[j].strikes = 0;
+            susp[j].word = word;
+        }
+        else if (susp[j].word != word)   /* ml1295: the lock moved since the last strike */
+        {
+            susp[j].strikes = 0;
+            susp[j].word = word;
         }
         susp[j].strikes++;
         dprintf( 2, "[lock-orphan] SRW %#llx word=%08x waiters=%d no-live-stamp strike=%d/3 rev=ml447\n",
