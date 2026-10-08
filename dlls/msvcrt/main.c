@@ -84,6 +84,45 @@ static inline void msvcrt_free_tls_mem(void)
   HeapFree(GetProcessHeap(), 0, tls);
 }
 
+#if defined(__arm64ec__) && _MSVCR_VER >= 70 && _MSVCR_VER <= 110
+/* On Madeira (iOS) an ARM64EC DLL runs from a copy of its image in the JIT
+ * pool. This code reaches its globals PC-relative, so the live data is the
+ * copy's, while an importer's data imports (_acmdln, __argv, _environ, ...)
+ * are bound to the PE mapping, which keeps the values it had at load time.
+ * Copy the writable data sections over the PE mapping once process init has
+ * filled them, before any importer runs. Nothing to do when the image runs
+ * from its own mapping. */
+static void msvcrt_sync_image_data( HINSTANCE pe_image )
+{
+    extern IMAGE_DOS_HEADER __ImageBase;
+    char *live = (char *)&__ImageBase;
+    char *pe = (char *)pe_image;
+    IMAGE_NT_HEADERS *nt;
+    IMAGE_SECTION_HEADER *sec;
+    unsigned int i;
+
+    if (live == pe) return;
+    nt = (IMAGE_NT_HEADERS *)(pe + ((IMAGE_DOS_HEADER *)pe)->e_lfanew);
+    sec = IMAGE_FIRST_SECTION( nt );
+    for (i = 0; i < nt->FileHeader.NumberOfSections; i++)
+    {
+        DWORD size = sec[i].Misc.VirtualSize;
+        char *dst = pe + sec[i].VirtualAddress;
+        MEMORY_BASIC_INFORMATION mbi;
+
+        if (!size || (sec[i].Characteristics & IMAGE_SCN_MEM_EXECUTE) ||
+            !(sec[i].Characteristics & IMAGE_SCN_MEM_WRITE)) continue;
+        /* No VirtualProtect: on a pool-copied image it copies the PE side
+         * into the running copy, which would wipe what DllMain just set up.
+         * Copy only when the whole section is already writable. */
+        if (!VirtualQuery( dst, &mbi, sizeof(mbi) ) ||
+            !(mbi.Protect & (PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE)) ||
+            (char *)mbi.BaseAddress + mbi.RegionSize < dst + size) continue;
+        memcpy( dst, live + sec[i].VirtualAddress, size );
+    }
+}
+#endif
+
 /*********************************************************************
  *                  Init
  */
@@ -134,6 +173,9 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
     _set_printf_count_output(0);
 #endif
     msvcrt_init_clock();
+#if defined(__arm64ec__) && _MSVCR_VER >= 70 && _MSVCR_VER <= 110
+    msvcrt_sync_image_data( hinstDLL );
+#endif
     TRACE("finished process init\n");
     break;
   case DLL_THREAD_ATTACH:
