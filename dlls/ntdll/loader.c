@@ -3907,6 +3907,15 @@ static BOOL madeira_force_builtin_dll( const WCHAR *name )
     static int native = -1;
     unsigned int i;
 
+    /* The UCRT always comes from system32, as on Windows 10+ where
+     * api-ms-win-crt-* are API sets and the system ucrtbase wins over an
+     * app-local copy. A game that ships Microsoft's x64 UCRT next to its exe
+     * (Rocket League) otherwise has it loaded for xtajit64.dll's CRT imports
+     * before the emulator runs, and its x86 entry point executes as ARM64
+     * (c000001d). */
+    if (!wcsicmp( name, L"ucrtbase.dll" ) || !wcsnicmp( name, L"api-ms-win-crt-", 15 ))
+        return TRUE;
+
     if (native < 0)
     {
         UNICODE_STRING nm, val;
