@@ -766,6 +766,14 @@ restart:
             (!thread || async->thread == thread) &&
             (!iosb || async->data.iosb == iosb))
         {
+            /* madeira-async-cancel-uaf: cancel_async() can terminate this
+             * async, and a terminated async can reach its last reference and
+             * be destroyed -- async_destroy() unlinks process_entry and frees
+             * the object. The list_remove() below would then be the second
+             * removal, on freed memory, which is a NULL next pointer and a
+             * store through it. Hold a reference across the cancel; it is
+             * released once this function is finished with the object. */
+            grab_object( async );
             if (!async->canceled) cancel_async( async );
             if (cancel)
             {
@@ -784,6 +792,12 @@ restart:
     {
         list_remove( &async->process_entry );
         list_add_tail( &process->asyncs, &async->process_entry );
+        /* madeira-async-cancel-uaf: the reference taken before the cancel.
+         * This is the last place the function touches the object, so if this
+         * is the final reference async_destroy() runs here and unlinks the
+         * entry from the list it was just put back on -- which is exactly
+         * what the refcount exists to make safe. */
+        release_object( async );
     }
     if (cancel)
     {
