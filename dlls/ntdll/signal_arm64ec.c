@@ -1877,11 +1877,50 @@ static void ios_log_unmap( void *addr )
     }
 }
 
+/* Non-image sections can contain generated guest code too. Register only
+ * committed regions (SEC_RESERVE may have holes), using their actual page
+ * protections. The image callback parses PE headers and cannot handle these
+ * mappings. Keep callbacks paired and inside the caller's syscall guard. */
+static void notify_mapped_section_protection( void *addr, SIZE_T size )
+{
+    MEMORY_BASIC_INFORMATION info;
+    char *cursor = addr;
+    SIZE_T remaining = size, length;
+
+    if (!pNotifyMemoryProtect) return;
+    while (remaining)
+    {
+        if (NtQueryVirtualMemory( GetCurrentProcess(), cursor, MemoryBasicInformation,
+                                  &info, sizeof(info), NULL )) break;
+        if ((char *)info.BaseAddress > cursor ||
+            (SIZE_T)(cursor - (char *)info.BaseAddress) >= info.RegionSize) break;
+        length = min( remaining, info.RegionSize - (SIZE_T)(cursor - (char *)info.BaseAddress) );
+        if (info.State == MEM_COMMIT)
+        {
+            pNotifyMemoryProtect( cursor, length, info.Protect, FALSE, 0 );
+            pNotifyMemoryProtect( cursor, length, info.Protect, TRUE, STATUS_SUCCESS );
+        }
+        cursor += length;
+        remaining -= length;
+    }
+}
+
 static void notify_map_view_of_section( HANDLE handle, void *addr, SIZE_T size, ULONG alloc,
                                         ULONG protect, NTSTATUS *ret_status )
 {
     SECTION_IMAGE_INFORMATION info;
+    SECTION_BASIC_INFORMATION basic;
     NTSTATUS status;
+
+    /* Do this before the loader-name gate: ordinary section mappings do not
+     * have ArbitraryUserPointer. Both NtMapViewOfSection variants reach here
+     * only after a successful map into the current process. */
+    if (!NtQuerySection( handle, SectionBasicInformation, &basic, sizeof(basic), NULL ) &&
+        !(basic.Attributes & SEC_IMAGE))
+    {
+        notify_mapped_section_protection( addr, size );
+        return;
+    }
 
     /* iOS-Madeira ml184 PROBE. FEX only treats a guest range as executable if
      * InvalidationTracker::XIntervals covers it, and that is populated ONLY from
