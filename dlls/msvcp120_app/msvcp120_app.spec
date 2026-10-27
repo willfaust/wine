@@ -1071,7 +1071,7 @@
 @ stub -arch=arm ??_Ftime_base@std@@QAAXXZ
 @ stub -arch=i386 ??_Ftime_base@std@@QAEXXZ
 @ stub -arch=win64 ??_Ftime_base@std@@QEAAXXZ
-@ stub ?GetNextAsyncId@platform@details@Concurrency@@YAIXZ
+@ cdecl ?GetNextAsyncId@platform@details@Concurrency@@YAIXZ() msvcp120.?GetNextAsyncId@platform@details@Concurrency@@YAIXZ
 @ stub -arch=win32 ?NFS_Allocate@details@Concurrency@@YAPAXIIPAX@Z
 @ stub -arch=win64 ?NFS_Allocate@details@Concurrency@@YAPEAX_K0PEAX@Z
 @ stub -arch=win32 ?NFS_Free@details@Concurrency@@YAXPAX@Z
@@ -3679,7 +3679,7 @@
 @ cdecl _Cnd_timedwait(ptr ptr ptr) msvcp120._Cnd_timedwait
 @ cdecl _Cnd_unregister_at_thread_exit(ptr) msvcp120._Cnd_unregister_at_thread_exit
 @ cdecl _Cnd_wait(ptr ptr) msvcp120._Cnd_wait
-@ stub _Cosh
+@ cdecl _Cosh(double double) msvcp120._Cosh
 @ extern _Denorm msvcp120._Denorm
 @ stub _Dint
 @ stub _Dnorm
@@ -3690,7 +3690,7 @@
 @ stub _Dunscale
 @ extern _Eps msvcp120._Eps
 @ cdecl _Exp(ptr double long) msvcp120._Exp
-@ stub _FCosh
+@ cdecl _FCosh(float float) msvcp120._FCosh
 @ extern _FDenorm msvcp120._FDenorm
 @ stub _FDint
 @ stub _FDnorm
@@ -3705,7 +3705,7 @@
 @ stub _FPlsw
 @ stub _FPmsw
 # extern _FRteps
-@ stub _FSinh
+@ cdecl _FSinh(float float) msvcp120._FSinh
 @ extern _FSnan msvcp120._FSnan
 # extern _FXbig
 @ stub _FXp_addh
@@ -3729,7 +3729,7 @@
 @ cdecl _Getwctypes(ptr ptr ptr ptr) msvcp120._Getwctypes
 @ extern _Hugeval msvcp120._Hugeval
 @ extern _Inf msvcp120._Inf
-@ stub _LCosh
+@ cdecl _LCosh(double double) msvcp120._LCosh
 @ extern _LDenorm msvcp120._LDenorm
 @ stub _LDint
 @ cdecl _LDscale(ptr long) msvcp120._LDscale
@@ -3744,7 +3744,7 @@
 @ stub _LPmsw
 @ stub _LPoly
 # extern _LRteps
-@ stub _LSinh
+@ cdecl _LSinh(double double) msvcp120._LSinh
 @ extern _LSnan msvcp120._LSnan
 # extern _LXbig
 @ stub _LXp_addh
@@ -3782,7 +3782,7 @@
 @ stub _Pmsw
 @ stub _Poly
 # extern _Rteps
-@ stub _Sinh
+@ cdecl _Sinh(double double) msvcp120._Sinh
 @ extern _Snan msvcp120._Snan
 @ cdecl _Stod(ptr ptr long) msvcp120._Stod
 @ cdecl _Stodx(ptr ptr long ptr) msvcp120._Stodx

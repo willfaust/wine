@@ -221,7 +221,6 @@ static void wined3d_disable_vulkan_features(struct wined3d_physical_device_info 
     dynamic_state3->extendedDynamicState3LineRasterizationMode = VK_FALSE;
     dynamic_state3->extendedDynamicState3LineStippleEnable = VK_FALSE;
     dynamic_state3->extendedDynamicState3LogicOpEnable = VK_FALSE;
-    dynamic_state3->extendedDynamicState3PolygonMode = VK_FALSE;
     dynamic_state3->extendedDynamicState3ProvokingVertexMode = VK_FALSE;
     dynamic_state3->extendedDynamicState3RasterizationStream = VK_FALSE;
     dynamic_state3->extendedDynamicState3RepresentativeFragmentTestEnable = VK_FALSE;
@@ -1933,7 +1932,7 @@ static const struct
 vulkan_instance_extensions[] =
 {
     {VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME, VK_API_VERSION_1_1, FALSE},
-    {VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME,                  VK_API_VERSION_1_1, FALSE},
+    {VK_KHR_EXTERNAL_FENCE_CAPABILITIES_EXTENSION_NAME,      VK_API_VERSION_1_1, FALSE},
     {VK_KHR_SURFACE_EXTENSION_NAME,                          ~0u,                TRUE},
     {VK_KHR_WIN32_SURFACE_EXTENSION_NAME,                    ~0u,                TRUE},
 };
@@ -2383,6 +2382,7 @@ static void wined3d_adapter_vk_init_d3d_info(struct wined3d_adapter_vk *adapter_
             && dynamic_state3->extendedDynamicState3ColorWriteMask;
     /* Rasterizer state needs EDS2, for rasterizer discard, and EDS1, for cull mode and front face. */
     vk_info->dynamic_rasterizer_state = dynamic_state3->extendedDynamicState3DepthClampEnable
+            && dynamic_state3->extendedDynamicState3PolygonMode
             && vk_info->dynamic_state2
             && adapter_vk->vk_info.supported[WINED3D_VK_EXT_EXTENDED_DYNAMIC_STATE];
 }
@@ -2414,6 +2414,12 @@ static bool wined3d_adapter_vk_init_device_extensions(struct wined3d_adapter_vk 
         {VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME,       ~0u},
         {VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME,          ~0u},
         {VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME,    ~0u},
+        {VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME,        ~0u},
+        /* FIXME: We don't use KHR_external_memory_win32 yet, but we do use
+         * KHR_external_memory_fd for VA support, and we need to enable the
+         * fd extension by enabling the win32 extension. */
+        {VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME,             ~0u},
+        {VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME,       ~0u},
         {VK_KHR_MAINTENANCE1_EXTENSION_NAME,                VK_API_VERSION_1_1, true},
         {VK_KHR_MAINTENANCE2_EXTENSION_NAME,                VK_API_VERSION_1_1},
         {VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE_EXTENSION_NAME,VK_API_VERSION_1_2},
@@ -2608,7 +2614,15 @@ static BOOL wined3d_adapter_vk_init(struct wined3d_adapter_vk *adapter_vk,
     adapter->fragment_pipe = wined3d_spirv_fragment_pipe_init_vk();
     adapter->misc_state_template = misc_state_template_vk;
     adapter->shader_backend = wined3d_spirv_shader_backend_init_vk();
-    adapter->decoder_ops = &wined3d_decoder_vk_ops;
+
+    if (wined3d_settings.decoder_backend == WINED3D_DECODER_BACKEND_NONE)
+        adapter->decoder_ops = &wined3d_null_decoder_ops;
+    else if (wined3d_settings.decoder_backend == WINED3D_DECODER_BACKEND_VA
+            || (wined3d_settings.decoder_backend == WINED3D_DECODER_BACKEND_AUTO
+                    && !vk_info->supported[WINED3D_VK_KHR_VIDEO_DECODE_H264]))
+        adapter->decoder_ops = &wined3d_decoder_va_vk_ops;
+    else
+        adapter->decoder_ops = &wined3d_decoder_vk_ops;
 
     wined3d_adapter_vk_init_d3d_info(adapter_vk, wined3d_creation_flags);
 

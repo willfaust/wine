@@ -103,10 +103,11 @@ static struct wg_transform *get_transform(wg_transform_t trans)
     return (struct wg_transform *)(ULONG_PTR)trans;
 }
 
-static void align_video_info_planes(MFVideoInfo *video_info, gsize plane_align, guint stride,
+static void align_video_info_planes(MFVideoInfo *video_info, gsize plane_align, gint stride,
         GstVideoInfo *info, GstVideoAlignment *align)
 {
     bool fix_nv12 = !plane_align && info->finfo->format == GST_VIDEO_FORMAT_NV12 && (info->width & 3) && (info->width & 3) != 3;
+    bool bottom_up = video_info->VideoFlags & MFVideoFlag_BottomUpLinearRep;
     const MFVideoArea *aperture = &video_info->MinimumDisplayAperture;
 
     gst_video_alignment_reset(align);
@@ -133,6 +134,10 @@ static void align_video_info_planes(MFVideoInfo *video_info, gsize plane_align, 
         gst_video_format_info_component(finfo, 0, comp);
         pixel_stride = finfo->pixel_stride[comp[0]];
 
+        bottom_up = stride < 0;
+        if (bottom_up)
+            stride = -stride;
+
         if (stride % pixel_stride)
             GST_ERROR("Stride %u not aligned to pixel size", stride);
         stride /= pixel_stride;
@@ -143,7 +148,7 @@ static void align_video_info_planes(MFVideoInfo *video_info, gsize plane_align, 
             align->padding_right += stride - width;
     }
 
-    if (video_info->VideoFlags & MFVideoFlag_BottomUpLinearRep)
+    if (bottom_up)
     {
         gsize top = align->padding_top;
         align->padding_top = align->padding_bottom;
@@ -169,7 +174,7 @@ static void align_video_info_planes(MFVideoInfo *video_info, gsize plane_align, 
         gst_video_info_align(info, align);
     }
 
-    if (video_info->VideoFlags & MFVideoFlag_BottomUpLinearRep)
+    if (bottom_up)
     {
         for (guint i = 0; i < ARRAY_SIZE(info->offset); ++i)
         {
@@ -1463,6 +1468,7 @@ static void wg_stepper_class_init(WgStepperClass *klass)
     gst_element_class_set_metadata(GST_ELEMENT_CLASS(klass), "winegstreamer buffer stepper", "Connector",
         "Hold incoming buffer for manual pushing", "Yuxuan Shui <yshui@codeweavers.com>");
     klass->parent_class.change_state = wg_stepper_change_state;
+    (void)wg_stepper_parent_class; /* silence unused variable warning */
 }
 
 static GstFlowReturn wg_stepper_chain_cb(GstPad *pad, GstObject *parent, GstBuffer *buf)

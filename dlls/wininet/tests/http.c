@@ -30,6 +30,7 @@
 #include "wininet.h"
 #include "winineti.h"
 #include "winsock2.h"
+#include "ws2tcpip.h"
 
 #include "wine/test.h"
 
@@ -170,26 +171,6 @@ static const test_data_t test_data[] = {
 static INTERNET_STATUS_CALLBACK (WINAPI *pInternetSetStatusCallbackA)(HINTERNET ,INTERNET_STATUS_CALLBACK);
 static INTERNET_STATUS_CALLBACK (WINAPI *pInternetSetStatusCallbackW)(HINTERNET ,INTERNET_STATUS_CALLBACK);
 static BOOL (WINAPI *pInternetGetSecurityInfoByURLA)(LPSTR,PCCERT_CHAIN_CONTEXT*,DWORD*);
-
-static BOOL is_lang_english(void)
-{
-    static HMODULE hkernel32 = NULL;
-    static LANGID (WINAPI *pGetThreadUILanguage)(void) = NULL;
-    static LANGID (WINAPI *pGetUserDefaultUILanguage)(void) = NULL;
-
-    if (!hkernel32)
-    {
-        hkernel32 = GetModuleHandleA("kernel32.dll");
-        pGetThreadUILanguage = (void*)GetProcAddress(hkernel32, "GetThreadUILanguage");
-        pGetUserDefaultUILanguage = (void*)GetProcAddress(hkernel32, "GetUserDefaultUILanguage");
-    }
-    if (pGetThreadUILanguage)
-        return PRIMARYLANGID(pGetThreadUILanguage()) == LANG_ENGLISH;
-    if (pGetUserDefaultUILanguage)
-        return PRIMARYLANGID(pGetUserDefaultUILanguage()) == LANG_ENGLISH;
-
-    return PRIMARYLANGID(GetUserDefaultLangID()) == LANG_ENGLISH;
-}
 
 static int strcmp_wa(LPCWSTR strw, const char *stra)
 {
@@ -3098,6 +3079,11 @@ static void test_proxy_direct(int port)
     hr = HttpOpenRequestA(hc, NULL, "/test2", NULL, NULL, NULL, 0, 0);
     ok(hr != NULL, "HttpOpenRequest failed\n");
 
+    SetLastError(0xdeadbeef);
+    r = InternetQueryOptionA(hr, INTERNET_OPTION_PROXY_PASSWORD, NULL, NULL);
+    ok(GetLastError() == ERROR_INVALID_PARAMETER, "got %lu\n", GetLastError());
+    ok(!r, "unexpected success\n");
+
     sz = 0;
     SetLastError(0xdeadbeef);
     r = InternetQueryOptionA(hr, INTERNET_OPTION_PROXY_PASSWORD, NULL, &sz);
@@ -3105,7 +3091,26 @@ static void test_proxy_direct(int port)
     ok(!r, "unexpected success\n");
     ok(sz == 1, "got %lu\n", sz);
 
+    sz = 0xbeef;
+    SetLastError(0xdeadbeef);
+    r = InternetQueryOptionA(hr, INTERNET_OPTION_PROXY_PASSWORD, NULL, &sz);
+    ok(GetLastError() == ERROR_INSUFFICIENT_BUFFER, "got %lu\n", GetLastError());
+    ok(!r, "unexpected success\n");
+    ok(sz == 1, "got %lu\n", sz);
+
+    SetLastError(0xdeadbeef);
+    r = InternetQueryOptionA(hr, INTERNET_OPTION_PROXY_USERNAME, NULL, NULL);
+    ok(GetLastError() == ERROR_INVALID_PARAMETER, "got %lu\n", GetLastError());
+    ok(!r, "unexpected success\n");
+
     sz = 0;
+    SetLastError(0xdeadbeef);
+    r = InternetQueryOptionA(hr, INTERNET_OPTION_PROXY_USERNAME, NULL, &sz);
+    ok(GetLastError() == ERROR_INSUFFICIENT_BUFFER, "got %lu\n", GetLastError());
+    ok(!r, "unexpected success\n");
+    ok(sz == 1, "got %lu\n", sz);
+
+    sz = 0xbeef;
     SetLastError(0xdeadbeef);
     r = InternetQueryOptionA(hr, INTERNET_OPTION_PROXY_USERNAME, NULL, &sz);
     ok(GetLastError() == ERROR_INSUFFICIENT_BUFFER, "got %lu\n", GetLastError());
@@ -3124,6 +3129,11 @@ static void test_proxy_direct(int port)
     ok(r, "unexpected failure %lu\n", GetLastError());
     ok(!sz, "got %lu\n", sz);
 
+    SetLastError(0xdeadbeef);
+    r = InternetQueryOptionA(hr, INTERNET_OPTION_PASSWORD, NULL, NULL);
+    ok(GetLastError() == ERROR_INVALID_PARAMETER, "got %lu\n", GetLastError());
+    ok(!r, "unexpected success\n");
+
     sz = 0;
     SetLastError(0xdeadbeef);
     r = InternetQueryOptionA(hr, INTERNET_OPTION_PASSWORD, NULL, &sz);
@@ -3131,7 +3141,26 @@ static void test_proxy_direct(int port)
     ok(!r, "unexpected success\n");
     ok(sz == 1, "got %lu\n", sz);
 
+    sz = 0xbeef;
+    SetLastError(0xdeadbeef);
+    r = InternetQueryOptionA(hr, INTERNET_OPTION_PASSWORD, NULL, &sz);
+    ok(GetLastError() == ERROR_INSUFFICIENT_BUFFER, "got %lu\n", GetLastError());
+    ok(!r, "unexpected success\n");
+    ok(sz == 1, "got %lu\n", sz);
+
+    SetLastError(0xdeadbeef);
+    r = InternetQueryOptionA(hr, INTERNET_OPTION_USERNAME, NULL, NULL);
+    ok(GetLastError() == ERROR_INVALID_PARAMETER, "got %lu\n", GetLastError());
+    ok(!r, "unexpected success\n");
+
     sz = 0;
+    SetLastError(0xdeadbeef);
+    r = InternetQueryOptionA(hr, INTERNET_OPTION_USERNAME, NULL, &sz);
+    ok(GetLastError() == ERROR_INSUFFICIENT_BUFFER, "got %lu\n", GetLastError());
+    ok(!r, "unexpected success\n");
+    ok(sz == 1, "got %lu\n", sz);
+
+    sz = 0xbeef;
     SetLastError(0xdeadbeef);
     r = InternetQueryOptionA(hr, INTERNET_OPTION_USERNAME, NULL, &sz);
     ok(GetLastError() == ERROR_INSUFFICIENT_BUFFER, "got %lu\n", GetLastError());
@@ -3150,7 +3179,19 @@ static void test_proxy_direct(int port)
     ok(r, "unexpected failure %lu\n", GetLastError());
     ok(!sz, "got %lu\n", sz);
 
+    SetLastError(0xdeadbeef);
+    r = InternetQueryOptionA(hr, INTERNET_OPTION_URL, NULL, NULL);
+    ok(GetLastError() == ERROR_INVALID_PARAMETER, "got %lu\n", GetLastError());
+    ok(!r, "unexpected success\n");
+
     sz = 0;
+    SetLastError(0xdeadbeef);
+    r = InternetQueryOptionA(hr, INTERNET_OPTION_URL, NULL, &sz);
+    ok(GetLastError() == ERROR_INSUFFICIENT_BUFFER, "got %lu\n", GetLastError());
+    ok(!r, "unexpected success\n");
+    ok(sz == 34, "got %lu\n", sz);
+
+    sz = 0xbeef;
     SetLastError(0xdeadbeef);
     r = InternetQueryOptionA(hr, INTERNET_OPTION_URL, NULL, &sz);
     ok(GetLastError() == ERROR_INSUFFICIENT_BUFFER, "got %lu\n", GetLastError());
@@ -3233,6 +3274,25 @@ static void test_proxy_direct(int port)
 
     r = InternetSetOptionA(hi, INTERNET_OPTION_USER_AGENT, useragent, 1);
     ok(r, "failed to set useragent\n");
+
+    SetLastError(0xdeadbeef);
+    r = InternetQueryOptionA(hi, INTERNET_OPTION_USER_AGENT, NULL, NULL);
+    ok(GetLastError() == ERROR_INVALID_PARAMETER, "got %lu\n", GetLastError());
+    ok(!r, "unexpected success\n");
+
+    sz = 0;
+    SetLastError(0xdeadbeef);
+    r = InternetQueryOptionA(hi, INTERNET_OPTION_USER_AGENT, NULL, &sz);
+    ok(GetLastError() == ERROR_INSUFFICIENT_BUFFER, "got %lu\n", GetLastError());
+    ok(!r, "unexpected success\n");
+    ok(sz == strlen(useragent) + 1, "got %lu\n", sz);
+
+    sz = 0xbeef;
+    SetLastError(0xdeadbeef);
+    r = InternetQueryOptionA(hi, INTERNET_OPTION_USER_AGENT, NULL, &sz);
+    ok(GetLastError() == ERROR_INSUFFICIENT_BUFFER, "got %lu\n", GetLastError());
+    ok(!r, "unexpected success\n");
+    ok(sz == strlen(useragent) + 1, "got %lu\n", sz);
 
     buffer[0] = 0;
     sz = 0;
@@ -6812,6 +6872,97 @@ static void test_pac(int port)
     close_request(&req);
 }
 
+struct af_priority_callback_data
+{
+    int resolving_count;
+    char *resolving;
+    int resolved_count;
+    char *resolved;
+    int connecting_count;
+    char *connecting[64];
+    int connected_count;
+    char *connected;
+};
+
+static VOID WINAPI af_priority_callback(HINTERNET hi, DWORD_PTR context, DWORD status,
+        void *info, DWORD info_len)
+{
+    struct af_priority_callback_data *data = (struct af_priority_callback_data *)context;
+
+    ok(!!data, "got NULL.\n");
+
+    switch (status)
+    {
+        case INTERNET_STATUS_RESOLVING_NAME:
+            ++data->resolving_count;
+            data->resolving = strdup(info);
+            break;
+        case INTERNET_STATUS_NAME_RESOLVED:
+            ++data->resolved_count;
+            data->resolved = strdup(info);
+            break;
+        case INTERNET_STATUS_CONNECTING_TO_SERVER:
+            ok(data->connecting_count < ARRAY_SIZE(data->connecting), "got %d.\n", data->connecting_count);
+            data->connecting[data->connecting_count++] = strdup(info);
+            break;
+        case INTERNET_STATUS_CONNECTED_TO_SERVER:
+            ++data->connected_count;
+            data->connected = strdup(info);
+            break;
+    }
+}
+
+static void test_af_priority(int port)
+{
+    struct af_priority_callback_data data = { 0 };
+    HINTERNET ses, con, req;
+    struct addrinfo *addr_info, hints;
+    int i, ret;
+    BOOL bret;
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_socktype = SOCK_STREAM;
+    ret = getaddrinfo("localhost", NULL, &hints, &addr_info);
+    ok(!ret, "got error %d.\n", ret);
+    if (addr_info->ai_family != AF_INET6)
+    {
+        skip("AF_INET6 not available for localhost.\n");
+        freeaddrinfo(addr_info);
+        return;
+    }
+    freeaddrinfo(addr_info);
+
+    ses = InternetOpenA( "winetest", INTERNET_OPEN_TYPE_DIRECT, NULL, NULL, 0 );
+    ok( ses != NULL, "InternetOpenA failed\n" );
+    pInternetSetStatusCallbackA(ses, &af_priority_callback);
+
+    con = InternetConnectA(ses, "localhost", port, NULL, NULL, INTERNET_SERVICE_HTTP, 0, (DWORD_PTR)&data);
+    ok( con != NULL, "InternetConnectA failed %lu\n", GetLastError() );
+    req = HttpOpenRequestA(con, "GET", "/test1", NULL, NULL, NULL, 0, (DWORD_PTR)&data);
+    ok( req != NULL, "HttpOpenRequestA failed %lu\n", GetLastError());
+    bret = HttpSendRequestA(req, NULL, 0, NULL, 0);
+    ok(bret, "HttpSendRequest failed with error %lu\n", GetLastError());
+
+    ok(data.resolving_count == 1, "got %d.\n", data.resolving_count);
+    ok(data.resolving && !strcmp(data.resolving, "localhost"), "got %s.\n", debugstr_a(data.resolving));
+    free(data.resolving);
+    ok(data.resolved_count == 1, "got %d.\n", data.resolved_count);
+    ok(data.resolved && !strcmp(data.resolved, "[::1]"), "got %s.\n", debugstr_a(data.resolved));
+    free(data.resolved);
+    ok(data.connecting_count == 2, "got %d.\n", data.connecting_count);
+    ok(data.connecting[0] && !strcmp(data.connecting[0], "[::1]"), "got %s.\n", debugstr_a(data.connecting[0]));
+    ok(data.connecting[1] && !strcmp(data.connecting[1], "127.0.0.1"), "got %s.\n", debugstr_a(data.connecting[1]));
+    for (i = 0; i < ARRAY_SIZE(data.connecting); ++i)
+        free(data.connecting[i]);
+    ok(data.connected_count == 1, "got %d.\n", data.connected_count);
+    ok(data.connected && !strcmp(data.connected, "127.0.0.1"), "got %s.\n", debugstr_a(data.connected));
+    free(data.connected);
+
+    InternetCloseHandle(req);
+    InternetCloseHandle(con);
+    InternetCloseHandle(ses);
+}
+
 static void test_http_connection(void)
 {
     struct server_info si;
@@ -6832,6 +6983,7 @@ static void test_http_connection(void)
         return;
     }
 
+    test_af_priority(si.port);
     test_basic_request(si.port, "GET", "/test1");
     test_proxy_indirect(si.port);
     test_proxy_direct(si.port);
@@ -6986,6 +7138,8 @@ static void test_cert_struct(HINTERNET req, const cert_struct_test_t *test)
     DWORD size;
     BOOL res;
 
+    SetThreadPreferredUILanguages( MUI_LANGUAGE_NAME, L"en-US\0", NULL );
+
     memset(&info, 0x5, sizeof(info));
 
     size = sizeof(info);
@@ -7006,11 +7160,10 @@ static void test_cert_struct(HINTERNET req, const cert_struct_test_t *test)
     ok(!info.lpszProtocolName, "lpszProtocolName = %s\n", info.lpszProtocolName);
     ok(info.dwKeySize >= 128 && info.dwKeySize <= 256, "dwKeySize = %lu\n", info.dwKeySize);
 
-    if (is_lang_english())
-        test_cert_struct_string(req, &info);
-    else
-        skip("Skipping tests that are English-only\n");
+    test_cert_struct_string(req, &info);
     release_cert_info(&info);
+
+    SetThreadPreferredUILanguages( MUI_LANGUAGE_NAME, NULL, NULL );
 }
 
 #define test_security_info(a,b,c) _test_security_info(__LINE__,a,b,c)

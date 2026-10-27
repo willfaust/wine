@@ -6,6 +6,9 @@
 @ stdcall A_SHAFinal(ptr ptr)
 @ stdcall A_SHAInit(ptr)
 @ stdcall A_SHAUpdate(ptr ptr long)
+@ stdcall AlpcGetHeaderSize(long)
+@ stdcall AlpcInitializeMessageAttribute(long ptr long ptr)
+@ stdcall AlpcGetMessageAttribute(ptr long)
 @ stdcall ApiSetQueryApiSetPresence(ptr ptr)
 @ stdcall ApiSetQueryApiSetPresenceEx(ptr ptr ptr)
 @ stub CsrAllocateCaptureBuffer
@@ -152,6 +155,12 @@
 @ stdcall -syscall NtAllocateUuids(ptr ptr ptr ptr)
 @ stdcall -syscall=0x0018 NtAllocateVirtualMemory(long ptr long ptr long long)
 @ stdcall -syscall NtAllocateVirtualMemoryEx(long ptr ptr long long ptr long)
+@ stdcall -syscall NtAlpcAcceptConnectPort(ptr ptr long ptr ptr ptr ptr ptr long)
+@ stdcall -syscall NtAlpcConnectPort(ptr ptr ptr ptr long ptr ptr ptr ptr ptr ptr)
+@ stdcall -syscall NtAlpcCreatePort(ptr ptr ptr)
+@ stdcall -syscall NtAlpcDisconnectPort(ptr long)
+@ stdcall -syscall NtAlpcImpersonateClientOfPort(ptr ptr ptr)
+@ stdcall -syscall NtAlpcSendWaitReceivePort(ptr long ptr ptr ptr ptr ptr ptr)
 @ stub -syscall=0x004c NtApphelpCacheControl
 @ stdcall -syscall NtAreMappedFilesTheSame(ptr ptr)
 @ stdcall -syscall NtAssignProcessToJobObject(long long)
@@ -230,7 +239,7 @@
 @ stdcall -syscall NtFlushInstructionCache(long ptr long)
 @ stdcall -syscall NtFlushKey(long)
 @ stdcall -syscall NtFlushProcessWriteBuffers()
-@ stdcall -syscall NtFlushVirtualMemory(long ptr ptr long)
+@ stdcall -syscall NtFlushVirtualMemory(long ptr ptr ptr)
 # @ stub NtFlushWriteBuffer
 # @ stub NtFreeUserPhysicalPages
 @ stdcall -syscall=0x001e NtFreeVirtualMemory(long ptr ptr long)
@@ -284,6 +293,7 @@
 @ stdcall -syscall NtOpenKeyedEvent(ptr long ptr)
 @ stdcall -syscall NtOpenMutant(ptr long ptr)
 # @ stub NtOpenObjectAuditAlarm
+@ stdcall -syscall NtOpenPrivateNamespace(ptr long ptr ptr)
 @ stdcall -syscall=0x0026 NtOpenProcess(ptr long ptr ptr)
 @ stdcall -syscall NtOpenProcessToken(long long ptr)
 @ stdcall -syscall=0x0030 NtOpenProcessTokenEx(long long long ptr)
@@ -1156,6 +1166,7 @@
 @ stdcall RtlpNtOpenKey(ptr long ptr)
 @ stdcall RtlpNtQueryValueKey(long ptr ptr ptr ptr)
 @ stdcall RtlpNtSetValueKey(ptr long ptr long)
+@ stdcall RtlpQueryDefaultUILanguage(ptr long)
 @ stdcall RtlpUnWaitCriticalSection(ptr)
 @ stdcall RtlpWaitForCriticalSection(ptr)
 @ stdcall RtlxAnsiStringToUnicodeSize(ptr) RtlAnsiStringToUnicodeSize
@@ -1190,6 +1201,7 @@
 @ stdcall TpSetPoolMinThreads(ptr long)
 @ stdcall TpSetPoolStackInformation(ptr ptr)
 @ stdcall TpSetTimer(ptr ptr long long)
+@ stdcall TpSetTimerEx(ptr ptr long long)
 @ stdcall TpSetWait(ptr long ptr)
 @ stdcall TpSimpleTryPost(ptr ptr ptr)
 @ stdcall TpStartAsyncIoOperation(ptr)
@@ -1227,6 +1239,12 @@
 @ stdcall -private ZwAllocateUuids(ptr ptr ptr ptr) NtAllocateUuids
 @ stdcall -private ZwAllocateVirtualMemory(long ptr long ptr long long) NtAllocateVirtualMemory
 @ stdcall -private ZwAllocateVirtualMemoryEx(long ptr ptr long long ptr long) NtAllocateVirtualMemoryEx
+@ stdcall -private ZwAlpcAcceptConnectPort(ptr ptr long ptr ptr ptr ptr ptr long) NtAlpcAcceptConnectPort
+@ stdcall -private ZwAlpcConnectPort(ptr ptr ptr ptr long ptr ptr ptr ptr ptr ptr) NtAlpcConnectPort
+@ stdcall -private ZwAlpcCreatePort(ptr ptr ptr) NtAlpcCreatePort
+@ stdcall -private ZwAlpcDisconnectPort(ptr long) NtAlpcDisconnectPort
+@ stdcall -private ZwAlpcImpersonateClientOfPort(ptr ptr ptr) NtAlpcImpersonateClientOfPort
+@ stdcall -private ZwAlpcSendWaitReceivePort(ptr long ptr ptr ptr ptr ptr ptr) NtAlpcSendWaitReceivePort
 @ stdcall -private ZwApphelpCacheControl() NtApphelpCacheControl
 @ stdcall -private ZwAreMappedFilesTheSame(ptr ptr) NtAreMappedFilesTheSame
 @ stdcall -private ZwAssignProcessToJobObject(long long) NtAssignProcessToJobObject
@@ -1304,7 +1322,7 @@
 @ stdcall -private ZwFlushInstructionCache(long ptr long) NtFlushInstructionCache
 @ stdcall -private ZwFlushKey(long) NtFlushKey
 @ stdcall -private ZwFlushProcessWriteBuffers() NtFlushProcessWriteBuffers
-@ stdcall -private ZwFlushVirtualMemory(long ptr ptr long) NtFlushVirtualMemory
+@ stdcall -private ZwFlushVirtualMemory(long ptr ptr ptr) NtFlushVirtualMemory
 # @ stub ZwFlushWriteBuffer
 # @ stub ZwFreeUserPhysicalPages
 @ stdcall -private ZwFreeVirtualMemory(long ptr ptr long) NtFreeVirtualMemory
@@ -1357,6 +1375,7 @@
 @ stdcall -private ZwOpenKeyedEvent(ptr long ptr) NtOpenKeyedEvent
 @ stdcall -private ZwOpenMutant(ptr long ptr) NtOpenMutant
 # @ stub ZwOpenObjectAuditAlarm
+@ stdcall -private ZwOpenPrivateNamespace(ptr long ptr ptr) NtOpenPrivateNamespace
 @ stdcall -private ZwOpenProcess(ptr long ptr ptr) NtOpenProcess
 @ stdcall -private ZwOpenProcessToken(long long ptr) NtOpenProcessToken
 @ stdcall -private ZwOpenProcessTokenEx(long long long ptr) NtOpenProcessTokenEx
@@ -1539,7 +1558,8 @@
 @ cdecl -private -arch=i386 _CIpow()
 @ cdecl -private -arch=i386 _CIsin()
 @ cdecl -private -arch=i386 _CIsqrt()
-@ stdcall -arch=!i386 __C_specific_handler(ptr long ptr ptr)
+@ stdcall -arch=!i386,!arm64ec __C_specific_handler(ptr long ptr ptr)
+@ stdcall -arch=arm64ec -norelay __C_specific_handler(ptr long ptr ptr)
 @ cdecl -arch=!i386 -norelay __chkstk()
 @ cdecl -arch=arm64ec -norelay __chkstk_arm64ec()
 @ cdecl __isascii(long)
@@ -1666,11 +1686,14 @@
 @ cdecl mbstowcs(ptr str long)
 @ cdecl memchr(ptr long long)
 @ cdecl memcmp(ptr ptr long)
-@ cdecl memcpy(ptr ptr long)
+@ cdecl -arch=!arm64ec memcpy(ptr ptr long)
+@ cdecl -arch=arm64ec -norelay memcpy(ptr ptr long)
 @ cdecl memcpy_s(ptr long ptr long)
-@ cdecl memmove(ptr ptr long)
+@ cdecl -arch=!arm64ec memmove(ptr ptr long)
+@ cdecl -arch=arm64ec -norelay memmove(ptr ptr long)
 @ cdecl memmove_s(ptr long ptr long)
-@ cdecl memset(ptr long long)
+@ cdecl -arch=!arm64ec memset(ptr long long)
+@ cdecl -arch=arm64ec -norelay memset(ptr long long)
 @ cdecl pow(double double)
 @ cdecl qsort(ptr long long ptr)
 @ cdecl qsort_s(ptr long long ptr ptr)

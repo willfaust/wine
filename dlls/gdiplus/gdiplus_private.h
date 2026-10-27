@@ -52,6 +52,20 @@
 #define PIXELFORMATBPP(x) ((x) ? ((x) >> 8) & 255 : 24)
 
 
+struct span
+{
+    /* Represents a horizontal span between two scanline intersections */
+    int x[2];
+    int y;
+};
+
+struct span_list
+{
+    struct span *spans;
+    size_t capacity;
+    size_t length;
+};
+
 COLORREF ARGB2COLORREF(ARGB color);
 HBITMAP ARGB2BMP(ARGB color);
 extern INT arc2polybezier(GpPointF * points, REAL x1, REAL y1, REAL x2, REAL y2,
@@ -131,7 +145,7 @@ extern void calc_curve_bezier(const GpPointF *pts, REAL tension, REAL *x1,
 extern void calc_curve_bezier_endp(REAL xend, REAL yend, REAL xadj, REAL yadj,
     REAL tension, REAL *x, REAL *y);
 
-extern void get_font_hfont(GpGraphics *graphics, GDIPCONST GpFont *font,
+extern void get_font_hfont(GpGraphics *graphics, GDIPCONST GpFont *font, BOOL vertical,
                            GDIPCONST GpStringFormat *format, HFONT *hfont,
                            LOGFONTW *lfw_return, GDIPCONST GpMatrix *matrix);
 
@@ -152,6 +166,8 @@ extern void delete_element(region_element *element);
 extern GpStatus get_region_hrgn(struct region_element *element, const RECT *bounds, HRGN *hrgn);
 
 extern GpStatus get_hatch_data(GpHatchStyle hatchstyle, const unsigned char **result);
+
+extern GpStatus region_element_to_spans(const struct region_element *element, const RECT *bounds, struct span_list *spans);
 
 static inline INT gdip_round(REAL x)
 {
@@ -274,6 +290,8 @@ struct GpGraphics{
     GpMatrix worldtrans; /* world transform */
     BOOL busy;      /* hdc handle obtained by GdipGetDC */
     GpRegion *clip; /* in device coords */
+    HRGN clip_hrgn; /* in device coords, cached */
+    RECT clip_hrgn_bounds; /* device bounds at the time clip_hrgn was created */
     UINT textcontrast; /* not used yet. get/set only */
     struct list containers;
     GraphicsContainer contid; /* last-issued container ID */
@@ -463,7 +481,9 @@ struct GpMetafile{
     GpUnit unit;
     MetafileType metafile_type;
     HENHMETAFILE hemf;
+    HMETAFILE hwmf;
     int preserve_hemf; /* if true, hemf belongs to the app and should not be deleted */
+    int preserve_hwmf; /* if true, hwmf belongs to the app and should not be deleted */
 
     /* recording */
     HDC record_dc;
@@ -590,6 +610,7 @@ struct GpFontCollection{
 
 struct GpFontFamily{
     WCHAR FamilyName[LF_FACESIZE];
+    WCHAR VerticalFamilyName[LF_FACESIZE];
     UINT16 em_height, ascent, descent, line_spacing; /* in font units */
     int dpi;
     BOOL installed;
@@ -685,7 +706,7 @@ GpStatus gdip_format_string(GpGraphics *graphics, HDC hdc,
     GDIPCONST RectF *rect, GDIPCONST GpStringFormat *format, int ignore_empty_clip,
     gdip_format_string_callback callback, void *user_data);
 
-void get_log_fontW(const GpFont *, GpGraphics *, LOGFONTW *);
+void get_log_fontW(const GpFont *, BOOL, GpGraphics *, LOGFONTW *);
 
 static inline BOOL image_lock(GpImage *image)
 {

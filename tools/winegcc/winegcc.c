@@ -187,6 +187,7 @@ static bool fake_module;
 static bool large_address_aware;
 static bool wine_builtin;
 static bool unwind_tables;
+static bool safeseh;
 static bool strip;
 static bool compile_only;
 static bool skip_link;
@@ -390,6 +391,17 @@ static int spawn(struct strarray args, int ignore_errors)
     return status;
 }
 
+static const char *get_target_name( enum target_cpu cpu )
+{
+    if (cpu != target.cpu)
+    {
+        const char *suffix = strchr( target_alias, '-' );
+        if (!suffix) suffix = "";
+        return strmake( "%s%s", get_cpu_name( cpu ), suffix );
+    }
+    return target_alias;
+}
+
 
 struct tool_names
 {
@@ -416,15 +428,16 @@ static void add_clang_options( const char *target_name, struct strarray *ret )
     if (no_default_config) strarray_add( ret, "--no-default-config" );
 }
 
-static struct strarray build_tool_name( const char *target_name, struct tool_names tool )
+static struct strarray build_tool_name( enum target_cpu cpu, struct tool_names tool )
 {
+    const char *target_name = get_target_name( cpu );
     const char *path, *str;
     struct strarray ret;
 
     if (cc_cmd && !strncmp( tool.llvm_base, "clang", 5 ))
     {
         ret = strarray_fromstring( cc_cmd, " " );
-        if (target.platform == PLATFORM_WINDOWS) add_clang_options( target_name, &ret );
+        if (is_llvm_pe_target( target ) || cpu != target.cpu) add_clang_options( target_name, &ret );
         return ret;
     }
 
@@ -456,11 +469,11 @@ static struct strarray get_translator(void)
     switch(processor)
     {
     case proc_cpp:
-        return build_tool_name( target_alias, tool_cpp );
+        return build_tool_name( target.cpu, tool_cpp );
     case proc_cc:
-        return build_tool_name( target_alias, tool_cc );
+        return build_tool_name( target.cpu, tool_cc );
     case proc_cxx:
-        return build_tool_name( target_alias, tool_cxx );
+        return build_tool_name( target.cpu, tool_cxx );
     }
     assert(0);
     return empty_strarray;
@@ -505,7 +518,7 @@ static struct strarray get_link_args( const char *output_name )
 {
     struct strarray link_args = get_translator();
     struct strarray flags = empty_strarray;
-    char *version;
+    const char *version;
 
     strarray_addall( &link_args, linker_args );
 
@@ -542,7 +555,7 @@ static struct strarray get_link_args( const char *output_name )
         break;
 
     case PLATFORM_MINGW:
-    case PLATFORM_CYGWIN:
+    case PLATFORM_WINDOWS_GNU:
         strarray_add( &link_args, "-nodefaultlibs" );
         strarray_add( &link_args, "-nostartfiles" );
 
@@ -606,8 +619,11 @@ static struct strarray get_link_args( const char *output_name )
         if (nostartfiles) strarray_add( &flags, "-nostartfiles" );
         if (image_base) strarray_add( &flags, strmake("-Wl,-base:%s", image_base ));
 
-        if (large_address_aware && target.cpu == CPU_i386)
-            strarray_add( &flags, "-Wl,-largeaddressaware" );
+        if (target.cpu == CPU_i386)
+        {
+            if (large_address_aware) strarray_add( &flags, "-Wl,-largeaddressaware" );
+            if (!safeseh) strarray_add( &flags, "-Wl,-safeseh:no" );
+        }
 
         if (entry_point) strarray_add( &flags, strmake( "-Wl,-entry:%s", entry_point ));
 
@@ -679,6 +695,7 @@ static const char *get_multiarch_dir( struct target target )
    case CPU_i386:    return "/i386-linux-gnu";
    case CPU_x86_64:  return "/x86_64-linux-gnu";
    case CPU_ARM:     return "/arm-linux-gnueabi";
+   case CPU_ARM64EC:
    case CPU_ARM64:   return "/aarch64-linux-gnu";
    default:
        assert(0);
@@ -886,8 +903,8 @@ static void compile( struct strarray files, const char *output_name, int compile
 	/* mixing different C and C++ compilers isn't supported in configure anyway */
 	case proc_cc:
 	case proc_cxx:
-            gcc = build_tool_name( target_alias, tool_cc );
-            gpp = build_tool_name( target_alias, tool_cxx );
+            gcc = build_tool_name( target.cpu, tool_cc );
+            gpp = build_tool_name( target.cpu, tool_cxx );
             STRARRAY_FOR_EACH( cc, &comp_args )
             {
                 STRARRAY_FOR_EACH( str, &gcc )
@@ -1055,21 +1072,21 @@ static void add_library( struct strarray lib_dirs, struct strarray *files, const
 
 /* run winebuild to generate the .spec.o file */
 static void build_spec_obj( const char *spec_file, const char *output_file,
-                            const char *target_name, struct strarray files,
+                            enum target_cpu cpu, struct strarray files,
                             struct strarray resources, struct strarray *spec_objs )
 {
-    struct strarray spec_args = get_winebuild_args( target_name );
+    struct strarray spec_args = get_winebuild_args( get_target_name( cpu ));
     struct strarray tool;
     const char *spec_o_name, *output_name;
 
     /* get the filename from the path */
     output_name = get_basename( output_file );
 
-    tool = build_tool_name( target_name, tool_cc );
+    tool = build_tool_name( cpu == CPU_ARM64EC ? CPU_x86_64 : cpu, tool_cc );
     strarray_add( &spec_args, strmake( "--cc-cmd=%s", strarray_tostring( tool, " " )));
     if (!is_pe)
     {
-        tool = build_tool_name( target_name, tool_ld );
+        tool = build_tool_name( cpu, tool_ld );
         strarray_add( &spec_args, strmake( "--ld-cmd=%s", strarray_tostring( tool, " " )));
     }
 
@@ -1107,9 +1124,6 @@ static void build_spec_obj( const char *spec_file, const char *output_file,
     strarray_add( &spec_args, subsystem );
 
     if (!is_shared && large_address_aware) strarray_add( &spec_args, "--large-address-aware" );
-
-    if (target.platform == PLATFORM_WINDOWS && target.cpu == CPU_i386)
-        strarray_add(&spec_args, "--safeseh");
 
     if (entry_point)
     {
@@ -1152,6 +1166,8 @@ static void build_data_lib( const char *spec_file, const char *output_file, stru
         strarray_add(&spec_args, "-E");
         strarray_add(&spec_args, spec_file);
     }
+    strarray_add( &spec_args, "--subsystem" );
+    strarray_add( &spec_args, subsystem );
 
     /* add resource files */
     STRARRAY_FOR_EACH( file, &files ) if (file[1] == 'r') strarray_add(&spec_args, file);
@@ -1168,7 +1184,6 @@ static void build(struct strarray input_files, const char *output)
     struct strarray link_args;
     char *output_file;
     const char *output_name, *spec_file, *lang;
-    const char *libgcc = NULL;
     int generate_app_loader = 1;
     const char *crt_lib = NULL;
 
@@ -1289,6 +1304,12 @@ static void build(struct strarray input_files, const char *output)
         if (is_pe) add_library(lib_dirs, &files, "compiler-rt");
         if (use_msvcrt)
         {
+            if (processor == proc_cxx)
+            {
+                add_library(lib_dirs, &files, "c++");
+                add_library(lib_dirs, &files, "msvcp140");
+                add_library(lib_dirs, &files, "vcruntime140");
+            }
             if (!crt_lib)
             {
                 if (strncmp( output_name, "msvcr", 5 ) &&
@@ -1321,14 +1342,12 @@ static void build(struct strarray input_files, const char *output)
 
     STRARRAY_FOR_EACH( file, &files ) if (file[1] == 'r') strarray_add( &resources, file );
 
-    build_spec_obj( spec_file, output_file, target_alias, files, resources, &spec_objs );
     if (is_arm64x)
     {
-        const char *suffix = strchr( target_alias, '-' );
-        if (!suffix) suffix = "";
-        build_spec_obj( spec_file, output_file, strmake( "aarch64%s", suffix ),
-                        files, empty_strarray, &spec_objs );
+        build_spec_obj( spec_file, output_file, CPU_ARM64EC, files, resources, &spec_objs );
+        build_spec_obj( spec_file, output_file, CPU_ARM64, files, empty_strarray, &spec_objs );
     }
+    else build_spec_obj( spec_file, output_file, target.cpu, files, resources, &spec_objs );
 
     if (fake_module) return;  /* nothing else to do */
 
@@ -1392,8 +1411,6 @@ static void build(struct strarray input_files, const char *output)
 	strarray_add(&link_args, "-lc");
     }
 
-    if (libgcc) strarray_add(&link_args, libgcc);
-
     atexit( cleanup_output_files );
 
     spawn(link_args, 0);
@@ -1403,7 +1420,7 @@ static void build(struct strarray input_files, const char *output)
         struct strarray tool, objcopy;
 
         if (strendswith(file, ".pdb")) continue;
-        objcopy = build_tool_name(target_alias, tool_objcopy);
+        objcopy = build_tool_name(target.cpu, tool_objcopy);
 
         tool = empty_strarray;
         strarray_addall( &tool, objcopy );
@@ -1434,9 +1451,9 @@ static void build(struct strarray input_files, const char *output)
             error("--out-implib requires a .spec or .def file\n");
 
         implib_args = get_winebuild_args( target_alias );
-        tool = build_tool_name( target_alias, tool_cc );
+        tool = build_tool_name( target.cpu, tool_cc );
         strarray_add( &implib_args, strmake( "--cc-cmd=%s", strarray_tostring( tool, " " )));
-        tool = build_tool_name( target_alias, tool_ld );
+        tool = build_tool_name( target.cpu, tool_ld );
         strarray_add( &implib_args, strmake( "--ld-cmd=%s", strarray_tostring( tool, " " )));
 
         strarray_add(&implib_args, "--implib");
@@ -1908,6 +1925,7 @@ int main(int argc, char **argv)
                             if (!strcmp(arg, "--data-only")) data_only = true;
                             if (!strcmp(arg, "--fake-module")) fake_module = true;
                             else strarray_add( &winebuild_args, arg );
+                            if (!strcmp(arg, "--safeseh")) safeseh = true;
                         }
                         raw_compiler_arg = raw_linker_arg = 0;
 		    }

@@ -607,7 +607,11 @@ static HRESULT media_source_start(struct media_source *source, IMFPresentationDe
         return E_OUTOFMEMORY;
 
     if (FAILED(hr = IMFPresentationDescriptor_GetStreamDescriptorCount(descriptor, &count)))
+    {
         WARN("Failed to get presentation descriptor stream count, hr %#lx\n", hr);
+        free(descriptors);
+        return hr;
+    }
 
     for (i = 0; i < count; i++)
     {
@@ -1380,7 +1384,6 @@ static ULONG WINAPI media_source_Release(IMFMediaSource *iface)
     {
         IMFMediaSource_Shutdown(iface);
         IMFMediaEventQueue_Release(source->event_queue);
-        IMFByteStream_Release(source->byte_stream);
         wg_parser_destroy(source->wg_parser);
         source->cs.DebugInfo->Spare[0] = 0;
         DeleteCriticalSection(&source->cs);
@@ -1585,6 +1588,7 @@ static HRESULT WINAPI media_source_Shutdown(IMFMediaSource *iface)
     IMFMediaEventQueue_QueueEventParamVar(source->event_queue, MEError, &GUID_NULL, MF_E_SHUTDOWN, NULL);
     IMFMediaEventQueue_Shutdown(source->event_queue);
     IMFByteStream_Close(source->byte_stream);
+    IMFByteStream_Release(source->byte_stream);
 
     while (source->stream_count--)
     {
@@ -1670,7 +1674,7 @@ static HRESULT media_source_create(struct object_context *context, IMFMediaSourc
     if (FAILED(hr = MFAllocateWorkQueue(&object->async_commands_queue)))
         goto fail;
 
-    if (!(parser = wg_parser_create(FALSE)))
+    if (!(parser = wg_parser_create(WG_PARSER_CREATE_FLAG_NONE)))
     {
         hr = E_OUTOFMEMORY;
         goto fail;

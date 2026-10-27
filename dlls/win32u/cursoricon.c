@@ -63,6 +63,8 @@ struct cursoricon_object
 
 static struct list icon_cache = LIST_INIT( icon_cache );
 
+static LONG has_set_cursor = 0;
+
 static struct cursoricon_object *get_icon_ptr( HICON handle )
 {
     struct cursoricon_object *obj = get_user_handle_ptr( handle, NTUSER_OBJ_ICON );
@@ -121,6 +123,7 @@ HCURSOR WINAPI NtUserSetCursor( HCURSOR cursor )
             old_cursor = wine_server_ptr_handle( reply->prev_handle );
     }
     SERVER_END_REQ;
+    InterlockedExchange( &has_set_cursor, 1 );
     if (!ret) return 0;
 
     check_for_events( QS_INPUT );
@@ -136,6 +139,9 @@ HCURSOR WINAPI NtUserSetCursor( HCURSOR cursor )
 HCURSOR WINAPI NtUserGetCursor(void)
 {
     HCURSOR ret;
+
+    if (!ReadNoFence( &has_set_cursor ))
+        return LoadImageW( NULL, (LPCWSTR)IDC_WAIT, IMAGE_CURSOR, 0, 0, LR_SHARED | LR_DEFAULTSIZE );
 
     SERVER_START_REQ( set_cursor )
     {
@@ -448,7 +454,7 @@ HCURSOR WINAPI NtUserGetCursorFrameInfo( HCURSOR cursor, DWORD istep, DWORD *rat
  *
  * Helper function to duplicate a bitmap.
  */
-static HBITMAP copy_bitmap( HBITMAP bitmap )
+static HBITMAP copy_bitmap( HBITMAP bitmap, const SIZE *size )
 {
     HDC src, dst = 0;
     HBITMAP new_bitmap = 0;
@@ -460,10 +466,11 @@ static HBITMAP copy_bitmap( HBITMAP bitmap )
     if ((src = NtGdiCreateCompatibleDC( 0 )) && (dst = NtGdiCreateCompatibleDC( 0 )))
     {
         NtGdiSelectBitmap( src, bitmap );
-        if ((new_bitmap = NtGdiCreateCompatibleBitmap( src, bmp.bmWidth, bmp.bmHeight )))
+        if ((new_bitmap = NtGdiCreateCompatibleBitmap( src, size ? size->cx : bmp.bmWidth, size ? size->cy : bmp.bmHeight )))
         {
             NtGdiSelectBitmap( dst, new_bitmap );
-            NtGdiBitBlt( dst, 0, 0, bmp.bmWidth, bmp.bmHeight, src, 0, 0, SRCCOPY, 0, 0 );
+            if (size) NtGdiStretchBlt( dst, 0, 0, size->cx, size->cy, src, 0, 0, bmp.bmWidth, bmp.bmHeight, SRCCOPY, 0 );
+            else NtGdiBitBlt( dst, 0, 0, bmp.bmWidth, bmp.bmHeight, src, 0, 0, SRCCOPY, 0, 0 );
         }
     }
     NtGdiDeleteObjectApp( dst );
@@ -496,8 +503,8 @@ BOOL WINAPI NtUserGetIconInfo( HICON icon, ICONINFO *info, UNICODE_STRING *modul
     info->fIcon        = obj->is_icon;
     info->xHotspot     = frame_obj->frame.hotspot.x;
     info->yHotspot     = frame_obj->frame.hotspot.y;
-    info->hbmColor     = copy_bitmap( frame_obj->frame.color );
-    info->hbmMask      = copy_bitmap( frame_obj->frame.mask );
+    info->hbmColor     = copy_bitmap( frame_obj->frame.color, NULL );
+    info->hbmMask      = copy_bitmap( frame_obj->frame.mask, NULL );
     if (!info->hbmMask || (!info->hbmColor && frame_obj->frame.color))
     {
         NtGdiDeleteObjectApp( info->hbmMask );
@@ -708,6 +715,40 @@ ULONG_PTR set_icon_param( HICON handle, const struct free_icon_params *params )
         release_user_handle_ptr( obj );
     }
     return ret;
+}
+
+HICON create_small_icon( HICON handle )
+{
+    struct cursoricon_frame frame = {0};
+    struct cursoricon_desc desc = {0};
+    struct cursoricon_object *obj;
+    HICON icon;
+    SIZE size;
+
+    if (!handle) return 0;
+
+    desc.frames = &frame;
+    frame.width = size.cx = get_system_metrics( SM_CXSMICON );
+    frame.height = size.cy = get_system_metrics( SM_CYSMICON );
+    frame.hotspot.x = frame.width / 2;
+    frame.hotspot.y = frame.height / 2;
+
+    if (!(obj = get_user_handle_ptr( handle, NTUSER_OBJ_ICON )) || obj == OBJ_OTHER_PROCESS) return 0;
+    frame.color = copy_bitmap( obj->frame.color, &size );
+    frame.alpha = copy_bitmap( obj->frame.alpha, &size );
+    frame.mask = copy_bitmap( obj->frame.mask, &size );
+    release_user_handle_ptr( obj );
+
+    if (!(icon = alloc_cursoricon_handle( TRUE )) || !NtUserSetCursorIconData( icon, NULL, NULL, &desc ))
+    {
+        NtGdiDeleteObjectApp( frame.color );
+        NtGdiDeleteObjectApp( frame.alpha );
+        NtGdiDeleteObjectApp( frame.mask );
+        NtUserDestroyCursor( icon, 0 );
+        return 0;
+    }
+
+    return icon;
 }
 
 /******************************************************************************

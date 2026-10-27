@@ -1,5 +1,6 @@
 /*
  * Copyright 2022 Zhiyi Zhang for CodeWeavers
+ * Copyright 2026 Conor McCarthy for CodeWeavers
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -42,6 +43,159 @@
 #include "wine/test.h"
 
 static BOOL is_wow64;
+
+static HRESULT get_activation_factory(const WCHAR *name, IActivationFactory **factory)
+{
+    HSTRING str = NULL;
+    HRESULT hr;
+
+    hr = WindowsCreateString(name, wcslen(name), &str);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    hr = RoGetActivationFactory(str, &IID_IActivationFactory, (void **)factory);
+    WindowsDeleteString(str);
+    ok(hr == S_OK || broken(hr == REGDB_E_CLASSNOTREG), "got hr %#lx.\n", hr);
+
+    if (hr == REGDB_E_CLASSNOTREG)
+        win_skip("%s runtimeclass not registered, skipping tests.\n", wine_dbgstr_w(name));
+
+    return hr;
+}
+
+static BYTE *buffer_get_data(IBuffer *buffer)
+{
+    IBufferByteAccess *access;
+    BYTE *data = NULL;
+    HRESULT hr;
+
+    hr = IBuffer_QueryInterface(buffer, &IID_IBufferByteAccess, (void **)&access);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    hr = IBufferByteAccess_Buffer(access, &data);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    IBufferByteAccess_Release(access);
+
+    return data;
+}
+
+#define DEFINE_ASYNC_COMPLETED_HANDLER(name, iface_type, async_type)                                \
+    struct name                                                                                     \
+    {                                                                                               \
+        iface_type iface_type##_iface;                                                              \
+        LONG refcount;                                                                              \
+        BOOL invoked;                                                                               \
+        HANDLE event;                                                                               \
+    };                                                                                              \
+                                                                                                    \
+    static HRESULT WINAPI name##_QueryInterface(iface_type *iface, REFIID iid, void **out)          \
+    {                                                                                               \
+        if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_IAgileObject) ||               \
+            IsEqualGUID(iid, &IID_##iface_type))                                                    \
+        {                                                                                           \
+            IUnknown_AddRef(iface);                                                                 \
+            *out = iface;                                                                           \
+            return S_OK;                                                                            \
+        }                                                                                           \
+                                                                                                    \
+        trace("%s not implemented, returning E_NOINTERFACE.\n", debugstr_guid(iid));                \
+        *out = NULL;                                                                                \
+        return E_NOINTERFACE;                                                                       \
+    }                                                                                               \
+                                                                                                    \
+    static ULONG WINAPI name##_AddRef(iface_type *iface)                                            \
+    {                                                                                               \
+        struct name *impl = CONTAINING_RECORD(iface, struct name, iface_type##_iface);              \
+        return InterlockedIncrement(&impl->refcount);                                               \
+    }                                                                                               \
+                                                                                                    \
+    static ULONG WINAPI name##_Release(iface_type *iface)                                           \
+    {                                                                                               \
+        struct name *impl = CONTAINING_RECORD(iface, struct name, iface_type##_iface);              \
+        ULONG ref = InterlockedDecrement(&impl->refcount);                                          \
+        if (!ref) free(impl);                                                                       \
+        return ref;                                                                                 \
+    }                                                                                               \
+                                                                                                    \
+    static HRESULT WINAPI name##_Invoke(iface_type *iface, async_type *async, AsyncStatus status)   \
+    {                                                                                               \
+        struct name *impl = CONTAINING_RECORD(iface, struct name, iface_type##_iface);              \
+        ok(!impl->invoked, "invoked twice\n");                                                      \
+        impl->invoked = TRUE;                                                                       \
+        if (impl->event) SetEvent(impl->event);                                                     \
+        return S_OK;                                                                                \
+    }                                                                                               \
+                                                                                                    \
+    static iface_type##Vtbl name##_vtbl =                                                           \
+    {                                                                                               \
+        name##_QueryInterface,                                                                      \
+        name##_AddRef,                                                                              \
+        name##_Release,                                                                             \
+        name##_Invoke,                                                                              \
+    };                                                                                              \
+                                                                                                    \
+    static iface_type *name##_create(HANDLE event)                                                  \
+    {                                                                                               \
+        struct name *impl;                                                                          \
+                                                                                                    \
+        if (!(impl = calloc(1, sizeof(*impl)))) return NULL;                                        \
+        impl->iface_type##_iface.lpVtbl = &name##_vtbl;                                             \
+        impl->event = event;                                                                        \
+        impl->refcount = 1;                                                                         \
+                                                                                                    \
+        return &impl->iface_type##_iface;                                                           \
+    }                                                                                               \
+                                                                                                    \
+    static DWORD await_##async_type(async_type *async, DWORD timeout)                               \
+    {                                                                                               \
+        iface_type *handler;                                                                        \
+        HANDLE event;                                                                               \
+        HRESULT hr;                                                                                 \
+        DWORD ret;                                                                                  \
+                                                                                                    \
+        event = CreateEventW(NULL, FALSE, FALSE, NULL);                                             \
+        ok(!!event, "CreateEventW failed, error %lu\n", GetLastError());                            \
+        handler = name##_create(event);                                                             \
+        ok(!!handler, "Failed to create completion handler\n");                                     \
+        hr = async_type##_put_Completed(async, handler);                                            \
+        ok(hr == S_OK, "put_Completed returned %#lx\n", hr);                                        \
+        ret = WaitForSingleObject(event, timeout);                                                  \
+        ok(!ret, "WaitForSingleObject returned %#lx\n", ret);                                       \
+        CloseHandle(event);                                                                         \
+        iface_type##_Release(handler);                                                              \
+                                                                                                    \
+        return ret;                                                                                 \
+    }
+
+#define check_async_info(a, b, c) check_async_info_(__LINE__, a, b, c)
+static void check_async_info_(int line, void *async, AsyncStatus expect_status, HRESULT expect_hr)
+{
+    AsyncStatus async_status;
+    IAsyncInfo *async_info;
+    HRESULT hr, async_hr;
+    UINT32 async_id;
+
+    hr = IInspectable_QueryInterface(async, &IID_IAsyncInfo, (void **)&async_info);
+    ok_(__FILE__, line)(hr == S_OK, "QueryInterface returned %#lx\n", hr);
+
+    async_id = 0xdeadbeef;
+    hr = IAsyncInfo_get_Id(async_info, &async_id);
+    if (expect_status < 4) ok_(__FILE__, line)(hr == S_OK, "get_Id returned %#lx\n", hr);
+    else ok_(__FILE__, line)(hr == E_ILLEGAL_METHOD_CALL, "get_Id returned %#lx\n", hr);
+    ok_(__FILE__, line)(!!async_id, "got id %u\n", async_id);
+
+    async_status = 0xdeadbeef;
+    hr = IAsyncInfo_get_Status(async_info, &async_status);
+    if (expect_status < 4) ok_(__FILE__, line)(hr == S_OK, "get_Status returned %#lx\n", hr);
+    else ok_(__FILE__, line)(hr == E_ILLEGAL_METHOD_CALL, "get_Status returned %#lx\n", hr);
+    ok_(__FILE__, line)(async_status == expect_status, "got status %u\n", async_status);
+
+    async_hr = 0xdeadbeef;
+    hr = IAsyncInfo_get_ErrorCode(async_info, &async_hr);
+    if (expect_status < 4) ok_(__FILE__, line)(hr == S_OK, "get_ErrorCode returned %#lx\n", hr);
+    else ok_(__FILE__, line)(hr == E_ILLEGAL_METHOD_CALL, "get_ErrorCode returned %#lx\n", hr);
+    if (expect_status < 4) todo_wine_if(FAILED(expect_hr)) ok_(__FILE__, line)(async_hr == expect_hr, "got error %#lx\n", async_hr);
+    else ok_(__FILE__, line)(async_hr == E_ILLEGAL_METHOD_CALL, "got error %#lx\n", async_hr);
+
+    IAsyncInfo_Release(async_info);
+}
 
 #define check_interface(obj, iid, supported) check_interface_(__LINE__, obj, iid, supported)
 static void check_interface_(unsigned int line, void *obj, const IID *iid, BOOL supported)
@@ -110,7 +264,7 @@ static void test_interfaces(void)
     check_interface(factory, &IID_IInspectable, TRUE);
     check_interface(factory, &IID_IAgileObject, TRUE);
     check_interface(factory, &IID_IActivationFactory, TRUE);
-    todo_wine check_interface(factory, &IID_IDataWriterFactory, TRUE);
+    check_interface(factory, &IID_IDataWriterFactory, TRUE);
     check_interface(factory, &IID_IRandomAccessStreamReferenceStatics, FALSE);
     check_interface(factory, &IID_IApiInformationStatics, FALSE);
     check_interface(factory, &IID_IPropertyValueStatics, FALSE);
@@ -383,9 +537,7 @@ static void test_IApiInformationStatics(void)
 
     ret = TRUE;
     hr = IApiInformationStatics_IsMethodPresent(statics, str, NULL, &ret);
-    todo_wine
     ok(hr == S_OK, "IsMethodPresent failed, hr %#lx.\n", hr);
-    todo_wine
     ok(ret == FALSE, "IsMethodPresent returned TRUE.\n");
 
     if (0) /* Crash on Windows */
@@ -396,7 +548,6 @@ static void test_IApiInformationStatics(void)
 
     ret = FALSE;
     hr = IApiInformationStatics_IsMethodPresent(statics, str, str2, &ret);
-    todo_wine
     ok(hr == S_OK, "IsMethodPresent failed, hr %#lx.\n", hr);
     todo_wine
     ok(ret == TRUE, "IsMethodPresent returned FALSE.\n");
@@ -1051,14 +1202,43 @@ static void test_IPropertyValueStatics(void)
     RoUninitialize();
 }
 
+#define test_metadata_file_paths(paths, count, exp_path, exp_path_wow64) \
+    test_metadata_file_paths_(__LINE__, paths, count, exp_path, exp_path_wow64)
+static void test_metadata_file_paths_(int line, HSTRING *paths, UINT32 count, const WCHAR *exp_path,
+                                      const WCHAR *exp_path_wow64)
+{
+    UINT32 i;
+
+    ok_(__FILE__, line)(count == 1, "got count %I32u\n", count);
+    if (count)
+    {
+        const WCHAR *str = WindowsGetStringRawBuffer(paths[0], NULL);
+
+        ok((!is_wow64 && !wcsicmp(str, exp_path)) || (is_wow64 && !wcsicmp(str, exp_path_wow64)) ||
+               broken(is_wow64 && !wcsicmp(str, exp_path_wow64)) /* win8, win10 1507 */,
+           "got %s\n", wine_dbgstr_w(str));
+    }
+
+    for (i = 0; i < count; i++)
+        WindowsDeleteString(paths[i]);
+    CoTaskMemFree(paths);
+}
+
 static void test_RoResolveNamespace(void)
 {
     static const WCHAR foundation[] = L"c:\\windows\\system32\\winmetadata\\windows.foundation.winmd";
     static const WCHAR foundation_wow64[] = L"c:\\windows\\sysnative\\winmetadata\\windows.foundation.winmd";
     static const WCHAR networking[] = L"c:\\windows\\system32\\winmetadata\\windows.networking.winmd";
     static const WCHAR networking_wow64[] = L"c:\\windows\\sysnative\\winmetadata\\windows.networking.winmd";
-    HSTRING name, *paths;
-    DWORD count, i;
+    static const WCHAR ui[] = L"c:\\windows\\system32\\winmetadata\\windows.ui.winmd";
+    static const WCHAR ui_wow64[] = L"c:\\windows\\sysnative\\winmetadata\\windows.ui.winmd";
+    static const WCHAR ui_xaml[] = L"c:\\windows\\system32\\winmetadata\\windows.ui.xaml.winmd";
+    static const WCHAR ui_xaml_wow64[] = L"c:\\windows\\sysnative\\winmetadata\\windows.ui.xaml.winmd";
+
+    static void *dummy = (void *)0xdeadbeef;
+    HSTRING name, *paths = dummy, *namespaces = dummy;
+    DWORD count = 0xdeadbeef, count2 = 0xdeadbeef, i;
+    HSTRING_HEADER hdr;
     HRESULT hr;
     static const struct
     {
@@ -1073,10 +1253,63 @@ static void test_RoResolveNamespace(void)
           networking, networking_wow64 },
         { L"Windows.Foundation", ARRAY_SIZE(L"Windows.Foundation") - 1,
           foundation, foundation_wow64 },
+        { L"Windows.Foundation.Collections", ARRAY_SIZE(L"Windows.Foundation.Collections") - 1,
+            foundation, foundation_wow64 },
+        { L"Windows.Foundation.NonExistent", ARRAY_SIZE(L"Windows.Foundation.NonExistent") - 1,
+            foundation, foundation_wow64 },
+        { L"Windows.UI", ARRAY_SIZE(L"Windows.UI") - 1, ui, ui_wow64 },
+        { L"Windows.UI.Xaml", ARRAY_SIZE(L"Windows.UI.Xaml") - 1, ui_xaml, ui_xaml_wow64 },
     };
 
     hr = RoInitialize(RO_INIT_MULTITHREADED);
     ok(hr == S_OK, "got %#lx\n", hr);
+
+    hr = RoResolveNamespace(NULL, NULL, 0, NULL, &count, &paths, &count2, &namespaces);
+    ok(hr == E_INVALIDARG, "got hr %#lx\n", hr);
+    ok(!count, "got count %lu\n", count);
+    ok(!count2, "got count2 %lu\n", count2);
+    ok(!paths, "got paths %p\n", paths);
+    ok(!namespaces, "got namespaces %p\n", namespaces);
+
+    paths = dummy;
+    count = 0xdeadbeef;
+    WindowsCreateStringReference(L"Windows.Foundation\0", wcslen(L"Windows.Foundation") + 1, &hdr, &name);
+    hr = RoResolveNamespace(name, NULL, 0, NULL, &count, &paths, NULL, NULL);
+    ok(hr == E_INVALIDARG, "got hr %#lx\n", hr);
+    ok(!count, "got count %lu\n", count);
+    ok(!paths, "got paths %p\n", paths);
+
+    WindowsCreateStringReference(L"Windows..Foundation", wcslen(L"Windows..Foundation"), &hdr, &name);
+    paths = dummy;
+    count = 0xdeadbeef;
+    hr = RoResolveNamespace(name, NULL, 0, NULL, &count, &paths, NULL, NULL);
+    ok(hr == RO_E_METADATA_NAME_NOT_FOUND, "got hr %#lx\n", hr);
+    ok(!paths, "got paths %p\n", paths);
+    ok(!count, "got count %lu\n", count);
+
+    paths = dummy;
+    hr = RoResolveNamespace(name, NULL, 0, NULL, NULL, &paths, NULL, NULL);
+    ok(hr == E_INVALIDARG, "got hr %#lx\n", hr);
+    ok(!paths, "got paths %p\n", paths);
+
+    count = 0xdeadbeef;
+    namespaces = dummy;
+    hr = RoResolveNamespace(name, NULL, 0, NULL, &count, NULL, NULL, &namespaces);
+    ok(hr == E_INVALIDARG, "got hr %#lx\n", hr);
+    ok(!count, "got count %lu\n", count);
+    ok(!namespaces, "got namespaces %p\n", namespaces);
+
+    paths = namespaces = dummy;
+    hr = RoResolveNamespace(name, NULL, 0, NULL, NULL, &paths, NULL, &namespaces);
+    ok(hr == E_INVALIDARG, "got hr %#lx\n", hr);
+    ok(!paths, "got paths %p\n", paths);
+    ok(!namespaces, "got namespaces %p\n", namespaces);
+
+    count = count2 = 0xdeadbeef;
+    hr = RoResolveNamespace(name, NULL, 0, NULL, &count, NULL, &count2, NULL);
+    ok(hr == E_INVALIDARG, "got hr %#lx\n", hr);
+    ok(!paths, "got paths %p\n", paths);
+    ok(!namespaces, "got namespaces %p\n", namespaces);
 
     for (i = 0; i < ARRAY_SIZE(tests); i++)
     {
@@ -1085,21 +1318,11 @@ static void test_RoResolveNamespace(void)
         ok(hr == S_OK, "got %#lx\n", hr);
 
         count = 0;
+        paths = NULL;
         hr = RoResolveNamespace(name, NULL, 0, NULL, &count, &paths, 0, NULL);
-        todo_wine ok(hr == S_OK, "got %#lx\n", hr);
-        if (hr == S_OK)
-        {
-            const WCHAR *str = WindowsGetStringRawBuffer(paths[0], NULL);
-
-            ok(count == 1, "got %lu\n", count);
-            ok((!is_wow64 && !wcsicmp( str, tests[i].path )) ||
-               (is_wow64 && !wcsicmp( str, tests[i].path_wow64 )) ||
-               broken(is_wow64 && !wcsicmp( str, tests[i].path )) /* win8, win10 1507 */,
-               "got %s\n", wine_dbgstr_w(str) );
-
-            WindowsDeleteString(paths[0]);
-            CoTaskMemFree(paths);
-        }
+        todo_wine_if(hr == RO_E_METADATA_NAME_NOT_FOUND) ok(hr == S_OK, "got %#lx\n", hr);
+        todo_wine_if(hr == RO_E_METADATA_NAME_NOT_FOUND)
+            test_metadata_file_paths(paths, count, tests[i].path, tests[i].path_wow64);
 
         WindowsDeleteString(name);
         winetest_pop_context();
@@ -1488,6 +1711,232 @@ done:
     RoUninitialize();
 }
 
+DEFINE_ASYNC_COMPLETED_HANDLER(async_uint32_result_handler, IAsyncOperationCompletedHandler_UINT32, IAsyncOperation_UINT32)
+
+static void test_DataWriter(void)
+{
+    static const WCHAR *in_memory_stream_statics_name = L"Windows.Storage.Streams.InMemoryRandomAccessStream";
+    static const WCHAR *data_writer_statics_name = L"Windows.Storage.Streams.DataWriter";
+    IAsyncOperationWithProgress_IBuffer_UINT32 *op_with_progress;
+    IRandomAccessStream *in_memory_stream = (void *)0xdeadbeef;
+    IOutputStream *detached_stream = (void *)0xdeadbeef;
+    IOutputStream *output_stream = (void *)0xdeadbeef;
+    IActivationFactory *factory = (void *)0xdeadbeef;
+    IInspectable *inspectable = (void *)0xdeadbeef;
+    const UINT64 uint64_value = 0xdeadbeefcafef00d;
+    IDataWriterFactory *data_writer_factory = NULL;
+    IAsyncOperation_UINT32 *operation;
+    IAsyncOperation_boolean *bool_op;
+    IInputStream *input_stream;
+    IDataWriter *data_writer;
+    BYTE byte_value = 0xab;
+    IBuffer *buffer;
+    UINT64 value64;
+    UINT32 value;
+    UINT res, i;
+    HRESULT hr;
+    BYTE *data;
+    LONG ref;
+
+    hr = RoInitialize(RO_INIT_MULTITHREADED);
+    ok(hr == S_OK, "got %#lx\n", hr);
+
+    if (FAILED(hr = get_activation_factory(data_writer_statics_name, &factory)))
+    {
+        RoUninitialize();
+        return;
+    }
+
+    hr = IActivationFactory_ActivateInstance(factory, &inspectable);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    hr = IActivationFactory_QueryInterface(factory, &IID_IDataWriterFactory, (void **)&data_writer_factory);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    IActivationFactory_Release(factory);
+
+    hr = IInspectable_QueryInterface(inspectable, &IID_IDataWriter, (void **)&data_writer);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    IInspectable_Release(inspectable);
+
+    check_interface(data_writer, &IID_IAgileObject, TRUE);
+
+    hr = IDataWriter_DetachStream(data_writer, &output_stream);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    ok(!output_stream, "got stream %p.\n", output_stream);
+
+    hr = IDataWriter_WriteBytes(data_writer, 8, (BYTE *)&uint64_value);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+
+    hr = IDataWriter_StoreAsync(data_writer, &operation);
+    ok(hr == HRESULT_FROM_WIN32(ERROR_INVALID_OPERATION), "got hr %#lx.\n", hr);
+    hr = IDataWriter_FlushAsync(data_writer, &bool_op);
+    ok(hr == HRESULT_FROM_WIN32(ERROR_INVALID_OPERATION), "got hr %#lx.\n", hr);
+
+    hr = IDataWriter_DetachBuffer(data_writer, &buffer);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    hr = IBuffer_get_Length(buffer, &value);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    ok(value == 8, "got length %u.\n", value);
+
+    data = buffer_get_data(buffer);
+    memcpy(&value64, data, sizeof(value64));
+    ok(value64 == uint64_value, "got %I64x.\n", value64);
+
+    IBuffer_Release(buffer);
+
+    ref = IDataWriter_Release(data_writer);
+    ok(ref == 0, "got ref %ld.\n", ref);
+
+    get_activation_factory(in_memory_stream_statics_name, &factory);
+
+    hr = IActivationFactory_ActivateInstance(factory, &inspectable);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    hr = IInspectable_QueryInterface(inspectable, &IID_IRandomAccessStream, (void **)&in_memory_stream);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    IInspectable_Release(inspectable);
+
+    hr = IRandomAccessStream_QueryInterface(in_memory_stream, &IID_IOutputStream, (void **)&output_stream);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    hr = IDataWriterFactory_CreateDataWriter(data_writer_factory, output_stream, &data_writer);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    IOutputStream_Release(output_stream);
+
+    for (i = 0; i < 2; ++i)
+    {
+        winetest_push_context("%u", i);
+
+        hr = IDataWriter_DetachBuffer(data_writer, &buffer);
+        ok(hr == S_OK, "got hr %#lx.\n", hr);
+        hr = IBuffer_get_Capacity(buffer, &value);
+        ok(hr == S_OK, "got hr %#lx.\n", hr);
+        /* Capacity starts small */
+        ok(value > 0 && value <= 16384, "got capacity %u.\n", value);
+        hr = IBuffer_get_Length(buffer, &value);
+        ok(hr == S_OK, "got hr %#lx.\n", hr);
+        ok(value == 0, "got length %u.\n", value);
+        IBuffer_Release(buffer);
+
+        winetest_pop_context();
+    }
+
+    hr = IDataWriter_WriteBytes(data_writer, 8, (BYTE *)&uint64_value);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    hr = IDataWriter_StoreAsync(data_writer, &operation);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+
+    /* Writing is allowed while storing, and the data will be stored by the next StoreAsync() call */
+    hr = IDataWriter_WriteBytes(data_writer, 1, &byte_value);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    res = await_IAsyncOperation_UINT32(operation, 1000);
+    ok(res == 0, "await_IAsyncOperation_UINT32 returned %#x\n", res);
+    check_async_info(operation, Completed, S_OK);
+    hr = IAsyncOperation_UINT32_GetResults(operation, &value);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    ok(value == 8, "got written %u.\n", value);
+    check_async_info(operation, Completed, S_OK);
+    ref = IAsyncOperation_UINT32_Release(operation);
+    ok(ref == 0, "got ref %ld.\n", ref);
+
+    hr = IDataWriter_StoreAsync(data_writer, &operation);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+
+    /* Storing replaces the buffer */
+    hr = IDataWriter_DetachBuffer(data_writer, &buffer);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    hr = IBuffer_get_Length(buffer, &value);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    ok(value == 0, "got length %u.\n", value);
+    /* Use the buffer later */
+
+    res = await_IAsyncOperation_UINT32(operation, 1000);
+    ok(res == 0, "await_IAsyncOperation_UINT32 returned %#x\n", res);
+    check_async_info(operation, Completed, S_OK);
+    hr = IAsyncOperation_UINT32_GetResults(operation, &value);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    ok(value == 1, "got written %u.\n", value);
+    ref = IAsyncOperation_UINT32_Release(operation);
+    ok(ref == 0, "got ref %ld.\n", ref);
+
+    hr = IRandomAccessStream_get_Size(in_memory_stream, &value64);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    ok(value64 == 9, "got size %lu.\n", (long)value64);
+    hr = IRandomAccessStream_get_Position(in_memory_stream, &value64);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    ok(value64 == 9, "got pos %lu.\n", (long)value64);
+
+    data = buffer_get_data(buffer);
+    hr = IBuffer_get_Capacity(buffer, &value);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    ok(value >= 9, "got capacity %u.\n", value);
+    memset(data, 0xcd, 9);
+
+    hr = IRandomAccessStream_QueryInterface(in_memory_stream, &IID_IInputStream, (void **)&input_stream);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+
+    hr = IRandomAccessStream_Seek(in_memory_stream, 0);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    hr = IInputStream_ReadAsync(input_stream, buffer, 9, 0, &op_with_progress);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    IBuffer_Release(buffer);
+    hr = IAsyncOperationWithProgress_IBuffer_UINT32_GetResults(op_with_progress, &buffer);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    ref = IAsyncOperationWithProgress_IBuffer_UINT32_Release(op_with_progress);
+    ok(ref == 0, "got ref %ld.\n", ref);
+    hr = IBuffer_get_Length(buffer, &value);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    ok(value == 9, "got read %u.\n", value);
+
+    data = buffer_get_data(buffer);
+    memcpy(&value64, data, sizeof(value64));
+    ok(value64 == uint64_value, "got %I64x.\n", value64);
+    ok(data[8] == byte_value, "got %#x.\n", data[8]);
+
+    ref = IDataWriter_Release(data_writer);
+    ok(ref == 0, "got ref %ld.\n", ref);
+
+    /* Releasing the data writer closes all streams */
+    hr = IInputStream_ReadAsync(input_stream, buffer, 8, 0, &op_with_progress);
+    ok(hr == RO_E_CLOSED, "got hr %#lx.\n", hr);
+
+    IBuffer_Release(buffer);
+    IInputStream_Release(input_stream);
+    ref = IRandomAccessStream_Release(in_memory_stream);
+    ok(ref == 0, "got ref %ld.\n", ref);
+
+    /* DetachStream() */
+
+    hr = IActivationFactory_ActivateInstance(factory, &inspectable);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    IActivationFactory_Release(factory);
+    hr = IInspectable_QueryInterface(inspectable, &IID_IRandomAccessStream, (void **)&in_memory_stream);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    IInspectable_Release(inspectable);
+
+    hr = IRandomAccessStream_QueryInterface(in_memory_stream, &IID_IOutputStream, (void **)&output_stream);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    hr = IDataWriterFactory_CreateDataWriter(data_writer_factory, output_stream, &data_writer);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    IOutputStream_Release(output_stream);
+
+    hr = IDataWriter_DetachStream(data_writer, &detached_stream);
+    ok(hr == S_OK, "got hr %#lx.\n", hr);
+    ok(detached_stream == output_stream, "got stream %p.\n", detached_stream);
+    IOutputStream_Release(detached_stream);
+
+    hr = IDataWriter_StoreAsync(data_writer, &operation);
+    ok(hr == HRESULT_FROM_WIN32(ERROR_INVALID_OPERATION), "got hr %#lx.\n", hr);
+    hr = IDataWriter_FlushAsync(data_writer, &bool_op);
+    ok(hr == HRESULT_FROM_WIN32(ERROR_INVALID_OPERATION), "got hr %#lx.\n", hr);
+
+    ref = IDataWriter_Release(data_writer);
+    ok(ref == 0, "got ref %ld.\n", ref);
+    ref = IRandomAccessStream_Release(in_memory_stream);
+    ok(ref == 0, "got ref %ld.\n", ref);
+    ref = IDataWriterFactory_Release(data_writer_factory);
+    ok(ref == 1, "got ref %ld.\n", ref);
+
+    RoUninitialize();
+}
+
 START_TEST(wintypes)
 {
     IsWow64Process(GetCurrentProcess(), &is_wow64);
@@ -1499,4 +1948,5 @@ START_TEST(wintypes)
     test_RoParseTypeName();
     test_RoResolveNamespace();
     test_IPropertySet();
+    test_DataWriter();
 }

@@ -147,6 +147,7 @@ static const char * const reason_names[] =
 struct file_id
 {
     BYTE ObjectId[16];
+    BYTE BirthVolumeId[16];
 };
 
 #define HASH_MAP_SIZE 32
@@ -2741,26 +2742,41 @@ NTSTATUS WINAPI LdrGetProcedureAddress(HMODULE module, const ANSI_STRING *name,
 static void set_security_cookie( ULONG_PTR *cookie )
 {
     static ULONG seed;
+    ULONG_PTR new_cookie;
+    SIZE_T size;
+    void *addr;
+    ULONG old_prot;
 
     TRACE( "initializing security cookie %p\n", cookie );
 
     if (!seed) seed = NtGetTickCount() ^ GetCurrentProcessId();
+    new_cookie = *cookie;
     for (;;)
     {
-        if (*cookie == DEFAULT_SECURITY_COOKIE_16)
-            *cookie = RtlRandom( &seed ) >> 16; /* leave the high word clear */
-        else if (*cookie == DEFAULT_SECURITY_COOKIE_32)
-            *cookie = RtlRandom( &seed );
+        if (new_cookie == DEFAULT_SECURITY_COOKIE_16)
+            new_cookie = RtlRandom( &seed ) >> 16; /* leave the high word clear */
+        else if (new_cookie == DEFAULT_SECURITY_COOKIE_32)
+            new_cookie = RtlRandom( &seed );
 #ifdef DEFAULT_SECURITY_COOKIE_64
-        else if (*cookie == DEFAULT_SECURITY_COOKIE_64)
+        else if (new_cookie == DEFAULT_SECURITY_COOKIE_64)
         {
-            *cookie = RtlRandom( &seed );
+            new_cookie = RtlRandom( &seed );
             /* fill up, but keep the highest word clear */
-            *cookie ^= (ULONG_PTR)RtlRandom( &seed ) << 16;
+            new_cookie ^= (ULONG_PTR)RtlRandom( &seed ) << 16;
         }
 #endif
         else
             break;
+    }
+
+    if (new_cookie == *cookie) return;  /* already initialized */
+
+    addr = cookie;
+    size = sizeof(*cookie);
+    if (!NtProtectVirtualMemory( NtCurrentProcess(), &addr, &size, PAGE_READWRITE, &old_prot ))
+    {
+        *cookie = new_cookie;
+        NtProtectVirtualMemory( NtCurrentProcess(), &addr, &size, old_prot, &old_prot );
     }
 }
 
@@ -2972,7 +2988,7 @@ static NTSTATUS build_module( LPCWSTR load_path, const UNICODE_STRING *nt_name, 
  *
  * Build the module data for the initially-loaded ntdll.
  */
-static void build_ntdll_module(void)
+static void *build_ntdll_module(void)
 {
     UNICODE_STRING nt_name = RTL_CONSTANT_STRING( L"\\??\\C:\\windows\\system32\\ntdll.dll" );
     MEMORY_BASIC_INFORMATION meminfo;
@@ -2986,8 +3002,8 @@ static void build_ntdll_module(void)
     assert( wm );
     wm->ldr.Flags &= ~LDR_DONT_RESOLVE_REFS;
     node_ntdll = wm->ldr.DdagNode;
-    if (TRACE_ON(relay)) RELAY_SetupDLL( module );
     TRACE_(loaddll)( "Loaded %s at %p: builtin\n", debugstr_w(wm->ldr.FullDllName.Buffer), module);
+    return module;
 }
 
 
@@ -3342,9 +3358,11 @@ static NTSTATUS open_dll_file( UNICODE_STRING *nt_name, WINE_MODREF **pwm, HANDL
         return STATUS_DLL_NOT_FOUND;
     }
 
-    if (!NtFsControlFile( handle, 0, NULL, NULL, &io, FSCTL_GET_OBJECT_ID, NULL, 0, &fid, sizeof(fid) ))
+    if (!NtFsControlFile( handle, 0, NULL, NULL, &io, FSCTL_GET_OBJECT_ID, NULL, 0, &fid, sizeof(fid) )
+        && io.Information >= sizeof(fid))
     {
-        memcpy( id, fid.ObjectId, sizeof(*id) );
+        memcpy( id->ObjectId, fid.ObjectId, sizeof(id->ObjectId) );
+        memcpy( id->BirthVolumeId, fid.BirthVolumeId, sizeof(id->BirthVolumeId) );
         if ((*pwm = find_fileid_module( id )))
         {
             TRACE( "%s is the same file as existing module %p %s\n", debugstr_w( nt_name->Buffer ),
@@ -4023,8 +4041,16 @@ static NTSTATUS find_dll_file( const WCHAR *load_path, const WCHAR *libname, UNI
             load_path = system_dir;
         }
         status = search_dll_file( load_path, libname, nt_name, pwm, mapping, image_info, id );
-        if (status == STATUS_DLL_NOT_FOUND)
+        switch (status)
+        {
+        case STATUS_NOT_SUPPORTED:
+        case STATUS_INVALID_IMAGE_FORMAT:
+            if (!is_prefix_bootstrap) break;
+            /* fall through */
+        case STATUS_DLL_NOT_FOUND:
             status = find_builtin_without_file( libname, nt_name, pwm, mapping, image_info, id );
+            break;
+        }
     }
     else if (!(status = RtlDosPathNameToNtPathName_U_WithStatus( libname, nt_name, NULL, NULL )))
         status = open_dll_file( nt_name, pwm, mapping, image_info, id );
@@ -5507,13 +5533,14 @@ static void init_wow64( CONTEXT *context )
 {
     if (!imports_fixup_done)
     {
-        HMODULE wow64;
+        HMODULE wow64, ntdll_module;
         WINE_MODREF *wm;
         NTSTATUS status;
         static const WCHAR wow64_path[] = L"C:\\windows\\system32\\wow64.dll";
 
         build_wow64_main_module();
-        build_ntdll_module();
+        ntdll_module = build_ntdll_module();
+        if (TRACE_ON(relay)) RELAY_SetupDLL( ntdll_module );
 
         if ((status = load_dll( NULL, wow64_path, 0, &wm, FALSE )))
         {
@@ -5702,6 +5729,7 @@ void loader_init( CONTEXT *context, void **entry )
         ANSI_STRING ctrl_routine = RTL_CONSTANT_STRING( "CtrlRoutine" );
         WINE_MODREF *kernel32;
         PEB *peb = NtCurrentTeb()->Peb;
+        void *ntdll_module;
         unsigned int i;
 
         peb->LdrData            = &ldr;
@@ -5775,7 +5803,7 @@ void loader_init( CONTEXT *context, void **entry )
         }
 
         wm = build_main_module();
-        build_ntdll_module();
+        ntdll_module = build_ntdll_module();
 #ifdef __arm64ec__
         /* iOS-Madeira: pre-allocate the main EXE's TLS slot BEFORE
          * load_arm64ec_module() so the main EXE claims slot 0 instead of
@@ -5808,6 +5836,7 @@ void loader_init( CONTEXT *context, void **entry )
         update_load_config( wm->ldr.DllBase );
         ERR( "loader_init: update_load_config done, proceeding to load kernel32\n" );
 #endif
+        if (TRACE_ON(relay)) RELAY_SetupDLL( ntdll_module );
 
         if ((status = load_dll( NULL, L"kernel32.dll", 0, &kernel32, FALSE )) != STATUS_SUCCESS)
         {
@@ -5818,7 +5847,6 @@ void loader_init( CONTEXT *context, void **entry )
         pBaseThreadInitThunk = RtlFindExportedRoutineByName( kernel32->ldr.DllBase, "BaseThreadInitThunk" );
         LdrGetProcedureAddress( kernel32->ldr.DllBase, &ctrl_routine, 0, (void **)&pCtrlRoutine );
 
-        actctx_init();
         locale_init();
         if (needs_elevation())
             elevate_token();

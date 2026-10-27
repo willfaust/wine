@@ -202,7 +202,6 @@ static const struct notify_test_datetime_format
 #define CHILD2_ID 2
 
 static BOOL (WINAPI *pInitCommonControlsEx)(const INITCOMMONCONTROLSEX*);
-static BOOL (WINAPI *pSetWindowSubclass)(HWND, SUBCLASSPROC, UINT_PTR, DWORD_PTR);
 
 static struct msg_sequence *sequences[NUM_MSG_SEQUENCES];
 
@@ -923,7 +922,7 @@ static void send_notify(HWND pager, UINT unicode, UINT ansi, LPARAM lParam, BOOL
 
     SendMessageW(pager, WM_NOTIFY, hdr->idFrom, lParam);
     ok(notify_test_info.received, "Expect notification received\n");
-    ok(hdr->code == code_change ? ansi : unicode, "Expect 0x%08x, got 0x%08x\n", hdr->code,
+    ok(hdr->code == (code_change ? ansi : unicode), "Expect 0x%08x, got 0x%08x\n", hdr->code,
        code_change ? ansi : unicode);
 }
 
@@ -1294,8 +1293,6 @@ static void init_functions(void)
 #define X(f) p##f = (void*)GetProcAddress(mod, #f);
     X(InitCommonControlsEx);
 #undef X
-
-    pSetWindowSubclass = (void*)GetProcAddress(mod, (LPSTR)410);
 }
 
 START_TEST(pager)

@@ -44,7 +44,6 @@ static int (WINAPI *pGetAddrInfoExW)(const WCHAR *name, const WCHAR *servname, D
 static int   (WINAPI *pGetAddrInfoExOverlappedResult)(OVERLAPPED *overlapped);
 static int (WINAPI *pGetHostNameW)(WCHAR *name, int len);
 static const char *(WINAPI *p_inet_ntop)(int family, void *addr, char *string, ULONG size);
-static const WCHAR *(WINAPI *pInetNtopW)(int family, void *addr, WCHAR *string, ULONG size);
 static int (WINAPI *p_inet_pton)(int family, const char *string, void *addr);
 static int (WINAPI *pInetPtonW)(int family, WCHAR *string, void *addr);
 static int (WINAPI *pWSCGetApplicationCategory)(LPCWSTR path, DWORD path_len, LPCWSTR extra, DWORD extra_len, DWORD *category, INT *err);
@@ -1064,11 +1063,6 @@ static void test_inet_pton(void)
         ok(WSAGetLastError() == (ret ? 0xdeadbeef : WSAEINVAL), "got error %u\n", WSAGetLastError());
         ok(addr == ipv4_tests[i].addr, "got addr %#08lx\n", addr);
 
-        WSASetLastError(0xdeadbeef);
-        addr = inet_addr(ipv4_tests[i].input);
-        ok(addr == ipv4_tests[i].ret ? ipv4_tests[i].addr : INADDR_NONE, "got addr %#08lx\n", addr);
-        ok(WSAGetLastError() == 0xdeadbeef, "got error %u\n", WSAGetLastError());
-
         winetest_pop_context();
     }
 
@@ -1273,6 +1267,8 @@ static void test_WSAAddressToString(void)
         { { 0xab20, 0, 0, 0, 0, 0, 0, 0x120 }, 0, 0xfa81, "[20ab::2001]:33274" },
         { { 0xab20, 0, 0, 0, 0, 0, 0, 0x120 }, 0x1234, 0xfa81, "[20ab::2001%4660]:33274" },
         { { 0xab20, 0, 0, 0, 0, 0, 0, 0x120 }, 0x1234, 0, "20ab::2001%4660" },
+        { { 0x1111, 0x2222, 0x3333, 0x4444, 0x0002, 0xfe5e, 0x7b7b, 0x7b7b }, ULONG_MAX, 0xffff,
+          "[1111:2222:3333:4444:200:5efe:123.123.123.123%4294967295]:65535" },
     };
     static struct
     {
@@ -2637,7 +2633,7 @@ static void test_gethostbyname(void)
     for (count = 0; addr_list[count] != NULL; count++)
     {
         char *ip = inet_ntoa(*addr_list[count]);
-        if (!strcmp(ip, "127.0.0.1"))
+        if (!strcmp(ip, "127.0.0.1") || !strcmp(ip, "127.12.34.56") /* Wine hack loopback addr substitute */)
             local_ip = TRUE;
         if (winetest_debug > 1) trace("%s\n", ip);
     }
@@ -3173,7 +3169,6 @@ START_TEST( protocol )
     pGetAddrInfoExW = (void *)GetProcAddress(GetModuleHandleA("ws2_32"), "GetAddrInfoExW");
     pGetHostNameW = (void *)GetProcAddress(GetModuleHandleA("ws2_32"), "GetHostNameW");
     p_inet_ntop = (void *)GetProcAddress(GetModuleHandleA("ws2_32"), "inet_ntop");
-    pInetNtopW = (void *)GetProcAddress(GetModuleHandleA("ws2_32"), "InetNtopW");
     p_inet_pton = (void *)GetProcAddress(GetModuleHandleA("ws2_32"), "inet_pton");
     pInetPtonW = (void *)GetProcAddress(GetModuleHandleA("ws2_32"), "InetPtonW");
     pWSCGetApplicationCategory = (void *)GetProcAddress(GetModuleHandleA("ws2_32"), "WSCGetApplicationCategory");

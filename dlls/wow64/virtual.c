@@ -122,6 +122,7 @@ static NTSTATUS mem_extended_parameters_32to64( MEM_EXTENDED_PARAMETER **ret_par
          * CEILING pair, exactly like zero_bits.  It is validated here against
          * the guest highest_user_address and translated into [B, B+limit] by
          * the unix side. */
+        if (req32->LowestStartingAddress > highest_user_address) return STATUS_INVALID_PARAMETER;
         if (req32->HighestEndingAddress > highest_user_address) return STATUS_INVALID_PARAMETER;
         req->LowestStartingAddress = ULongToPtr( req32->LowestStartingAddress );
         req->HighestEndingAddress  = ULongToPtr( req32->HighestEndingAddress );
@@ -161,6 +162,8 @@ NTSTATUS WINAPI wow64_NtAllocateVirtualMemory( UINT *args )
     NTSTATUS status;
 
     if (!addr && (type & MEM_COMMIT)) type |= MEM_RESERVE;
+    if (*addr32 > highest_user_address) return STATUS_CONFLICTING_ADDRESSES;
+    if (*addr32 + size > highest_user_address + 1) return STATUS_CONFLICTING_ADDRESSES;
 
     if (!is_current) send_cross_process_notification( process, CrossProcessPreVirtualAlloc,
                                                       addr, size, 3, type, protect, 0 );
@@ -204,6 +207,8 @@ NTSTATUS WINAPI wow64_NtAllocateVirtualMemoryEx( UINT *args )
 
     if (!addr) type |= MEM_RESERVE;
 
+    if (*addr32 > highest_user_address) return STATUS_CONFLICTING_ADDRESSES;
+    if (*addr32 + size > highest_user_address + 1) return STATUS_CONFLICTING_ADDRESSES;
     if ((status = mem_extended_parameters_32to64( &params64, params32, &count, set_limit ))) return status;
 
     if (!is_current) send_cross_process_notification( process, CrossProcessPreVirtualAlloc,
@@ -295,7 +300,8 @@ NTSTATUS WINAPI wow64_NtFlushVirtualMemory( UINT *args )
     HANDLE process = get_handle( &args );
     ULONG *addr32 = get_ptr( &args );
     ULONG *size32 = get_ptr( &args );
-    ULONG unknown = get_ulong( &args );
+    IO_STATUS_BLOCK32 *io32 = get_ptr( &args );
+    IO_STATUS_BLOCK io;
 
     ULONG_PTR base = wow_guest_base_for_process( process );
     void *addr;
@@ -303,7 +309,7 @@ NTSTATUS WINAPI wow64_NtFlushVirtualMemory( UINT *args )
     NTSTATUS status;
 
     status = NtFlushVirtualMemory( process, (const void **)addr_32to64_in( base, &addr, addr32 ),
-                                   size_32to64( &size, size32 ), unknown );
+                                   size_32to64( &size, size32 ), iosb_32to64( &io, io32 ) );
     if (!status)
     {
         put_addr_in( base, addr32, addr );
@@ -507,6 +513,11 @@ NTSTATUS WINAPI wow64_NtMapViewOfSection( UINT *args )
     NTSTATUS status;
     void *prev = NtCurrentTeb()->Tib.ArbitraryUserPointer;
 
+    if (addr32)
+    {
+        if (*addr32 > highest_user_address) return STATUS_INVALID_PARAMETER;
+        if (size32 && *addr32 + (SIZE_T)*size32 > highest_user_address + 1) return STATUS_CONFLICTING_ADDRESSES;
+    }
     NtCurrentTeb()->Tib.ArbitraryUserPointer = guest_ptr32( NtCurrentTeb32()->Tib.ArbitraryUserPointer );
     status = NtMapViewOfSection( handle, process, addr_32to64_in( base, &addr, addr32 ), get_zero_bits( zero_bits ),
                                  commit, offset, size_32to64( &size, size32 ), inherit, alloc, protect );
@@ -545,6 +556,11 @@ NTSTATUS WINAPI wow64_NtMapViewOfSectionEx( UINT *args )
     void *prev = NtCurrentTeb()->Tib.ArbitraryUserPointer;
     ULONG_PTR base = wow_guest_base_for_process( process );
 
+    if (addr32)
+    {
+        if (*addr32 > highest_user_address) return STATUS_INVALID_PARAMETER;
+        if (size32 && *addr32 + (SIZE_T)*size32 > highest_user_address + 1) return STATUS_CONFLICTING_ADDRESSES;
+    }
     if ((status = mem_extended_parameters_32to64( &params64, params32, &count, set_limit ))) return status;
 
     NtCurrentTeb()->Tib.ArbitraryUserPointer = guest_ptr32( NtCurrentTeb32()->Tib.ArbitraryUserPointer );

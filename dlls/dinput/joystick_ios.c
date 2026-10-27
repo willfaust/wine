@@ -494,7 +494,7 @@ HRESULT ios_joystick_enum_device( DWORD type, DWORD flags, DIDEVICEINSTANCEW *in
     /* Honour the same HKCU\Software\Wine\DirectInput\Joysticks disable list
      * the HID path honours, so a title that has to be told to ignore a pad can
      * be told in the usual place. */
-    if (device_instance_is_disabled( instance, &override )) return DIERR_DEVICENOTREG;
+    if (device_instance_is_disabled( instance->tszInstanceName, &override )) return DIERR_DEVICENOTREG;
 
     return DI_OK;
 }

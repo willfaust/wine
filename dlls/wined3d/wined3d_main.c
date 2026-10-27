@@ -27,9 +27,12 @@
 #include "initguid.h"
 #include "wined3d_private.h"
 #include "wined3d_gl.h"
+#include <d3d10.h>
+#include <d3d10_1shader.h>
 #include "d3d12.h"
 #define VK_NO_PROTOTYPES
 #include "wine/vulkan.h"
+#define VKD3D_UTILS_NO_WIN32_TYPES
 #include <vkd3d_utils.h>
 
 WINE_DEFAULT_DEBUG_CHANNEL(d3d);
@@ -129,6 +132,7 @@ struct wined3d_settings wined3d_settings =
     .max_sm_cs = UINT_MAX,
     .renderer = WINED3D_RENDERER_AUTO,
     .shader_backend = WINED3D_SHADER_BACKEND_AUTO,
+    .decoder_backend = WINED3D_DECODER_BACKEND_AUTO,
 };
 
 enum wined3d_renderer CDECL wined3d_get_renderer(void)
@@ -361,6 +365,24 @@ static BOOL wined3d_dll_init(HINSTANCE hInstDLL)
             {
                 ERR_(winediag)("Using the GLSL shader backend.\n");
                 wined3d_settings.shader_backend = WINED3D_SHADER_BACKEND_GLSL;
+            }
+        }
+        if (!get_config_key(hkey, appkey, env, "decoder_backend", buffer, size))
+        {
+            if (!stricmp(buffer, "vulkan"))
+            {
+                ERR_(winediag)("Using the Vulkan video decoder backend.\n");
+                wined3d_settings.decoder_backend = WINED3D_DECODER_BACKEND_VULKAN;
+            }
+            else if (!stricmp(buffer, "va"))
+            {
+                ERR_(winediag)("Using the VA video decoder backend.\n");
+                wined3d_settings.decoder_backend = WINED3D_DECODER_BACKEND_VA;
+            }
+            else if (!stricmp(buffer, "none"))
+            {
+                ERR_(winediag)("Disabling hardware video decoding support.\n");
+                wined3d_settings.decoder_backend = WINED3D_DECODER_BACKEND_NONE;
             }
         }
         if (!get_config_key_dword(hkey, appkey, env, "VideoPciDeviceID", &tmpvalue))

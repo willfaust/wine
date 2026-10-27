@@ -97,7 +97,9 @@ struct incl_file
 #define FLAG_SFD_FONTS      0x00400000  /* sfd file generated bitmap fonts */
 #define FLAG_C_IMPLIB       0x01000000  /* file is part of an import library */
 #define FLAG_C_UNIX         0x02000000  /* file is part of a Unix library */
-#define FLAG_ARM64EC_X64    0x04000000  /* use x86_64 object on ARM64EC */
+#define FLAG_C_CXX          0x04000000  /* file uses C++ */
+#define FLAG_C_ASM          0x08000000  /* file uses assembly */
+#define FLAG_ARM64EC_X64    0x10000000  /* use x86_64 object on ARM64EC */
 
 static const struct
 {
@@ -136,6 +138,7 @@ static struct strarray lddll_flags;
 static struct strarray libs;
 static struct strarray enable_tests;
 static struct strarray external_dirs;
+static struct strarray disabled_dirs;
 static struct strarray cmdline_vars;
 static struct strarray subdirs;
 static struct strarray delay_import_libs;
@@ -149,6 +152,7 @@ static const char *fontforge;
 static const char *convert;
 static const char *flex;
 static const char *bison;
+static const char *nasm;
 static const char *rsvg;
 static const char *icotool;
 static const char *msgfmt;
@@ -181,8 +185,7 @@ static const char *delay_load_flags[MAX_ARCHS];
 static struct strarray debug_flags[MAX_ARCHS];
 static struct strarray target_flags[MAX_ARCHS];
 static struct strarray extra_cflags[MAX_ARCHS];
-static struct strarray extra_cflags_extlib[MAX_ARCHS];
-static struct strarray disabled_dirs[MAX_ARCHS];
+static struct strarray extra_cxxflags[MAX_ARCHS];
 static unsigned int native_archs[MAX_ARCHS];
 static unsigned int hybrid_archs[MAX_ARCHS];
 static struct strarray hybrid_target_flags[MAX_ARCHS];
@@ -486,6 +489,22 @@ static const char *get_base_name( const char *name )
 
 
 /*******************************************************************
+ *         skip_initial_dir
+ */
+static const char *skip_initial_dir( const char *name, const char *dir )
+{
+    unsigned int len = strlen( dir );
+
+    if (!strncmp( name, dir, len ) && (!name[len] || name[len] == '/'))
+    {
+        while (name[len] == '/') len++;
+        return name + len;
+    }
+    return NULL;
+}
+
+
+/*******************************************************************
  *         replace_filename
  */
 static char *replace_filename( const char *path, const char *name )
@@ -551,6 +570,7 @@ static char *concat_paths( const char *base, const char *path )
 {
     int i, len;
     char *ret;
+    const char *p;
 
     if (!base || !base[0]) return xstrdup( path && path[0] ? path : "." );
     if (!path || !path[0]) return xstrdup( base );
@@ -558,15 +578,11 @@ static char *concat_paths( const char *base, const char *path )
 
     len = strlen( base );
     while (len && base[len - 1] == '/') len--;
-    while (len && !strncmp( path, "..", 2 ) && (!path[2] || path[2] == '/'))
+    while (len && (p = skip_initial_dir( path, ".." )))
     {
         for (i = len; i > 0; i--) if (base[i - 1] == '/') break;
         if (i == len - 2 && !memcmp( base + i, "..", 2 )) break;  /* we can't go up if we already have ".." */
-        if (i != len - 1 || base[i] != '.')
-        {
-            path += 2;
-            while (*path == '/') path++;
-        }
+        if (i != len - 1 || base[i] != '.') path = p;
         /* else ignore "." element */
         while (i > 0 && base[i - 1] == '/') i--;
         len = i;
@@ -627,14 +643,13 @@ static bool is_native_arch_disabled( struct makefile *make )
  */
 static bool is_subdir_other_arch( const char *name, unsigned int arch )
 {
+    int cpu;
     const char *dir, *p = strrchr( name, '/' );
 
-    if (!p || p == name) return 0;
+    if (!p || p == name) return false;
     dir = get_basename( strmake( "%.*s", (int)(p - name), name ));
-    if (!strcmp( dir, "arm64" )) dir = "aarch64";
-    if (!strcmp( dir, "amd64" )) dir = "x86_64";
-    if (native_archs[arch] && !strcmp( dir, archs.str[native_archs[arch]] )) return false;
-    return strcmp( dir, archs.str[arch] );
+    if ((cpu = get_cpu_from_name( dir )) == -1) return false;
+    return cpu != get_cpu_from_name( archs.str[arch] );
 }
 
 
@@ -1141,6 +1156,57 @@ static void parse_c_file( struct file *source, FILE *file )
 
 
 /*******************************************************************
+ *         parse_asm_file
+ */
+static void parse_asm_file( struct file *source, FILE *file )
+{
+    source->flags |= FLAG_C_ASM;
+    parse_c_file( source, file );
+}
+
+
+/*******************************************************************
+ *         parse_cxx_file
+ */
+static void parse_cxx_file( struct file *source, FILE *file )
+{
+    source->flags |= FLAG_C_CXX;
+    parse_c_file( source, file );
+}
+
+
+/*******************************************************************
+ *         parse_nasm_directive
+ */
+static void parse_nasm_directive( struct file *source, char *str )
+{
+    str = skip_spaces( str );
+    if (*str++ != '%') return;
+    str = skip_spaces( str );
+
+    if (!strncmp( str, "include", 7 ))
+        parse_include_directive( source, str + 7 );
+    else if (!strncmp( str, "pragma", 6 ))
+        parse_pragma_directive( source, str + 6 );
+}
+
+
+/*******************************************************************
+ *         parse_nasm_file
+ */
+static void parse_nasm_file( struct file *source, FILE *file )
+{
+    char *buffer;
+
+    input_line = 0;
+    while ((buffer = get_line( file )))
+    {
+        parse_nasm_directive( source, buffer );
+    }
+}
+
+
+/*******************************************************************
  *         parse_rc_file
  */
 static void parse_rc_file( struct file *source, FILE *file )
@@ -1249,13 +1315,19 @@ static const struct
 {
     { ".c",   parse_c_file },
     { ".h",   parse_c_file },
+    { ".inc", parse_c_file },
     { ".inl", parse_c_file },
     { ".l",   parse_c_file },
     { ".m",   parse_c_file },
     { ".rh",  parse_c_file },
     { ".x",   parse_c_file },
     { ".y",   parse_c_file },
+    { ".S",   parse_asm_file },
+    { ".asm", parse_nasm_file },
     { ".idl", parse_idl_file },
+    { ".cpp", parse_cxx_file },
+    { ".hpp", parse_cxx_file },
+    { ".ipp", parse_cxx_file },
     { ".rc",  parse_rc_file },
     { ".ver", parse_rc_file },
     { ".in",  parse_in_file },
@@ -1286,6 +1358,12 @@ static struct file *load_file( const char *name )
         if (!strendswith( name, parse_functions[i].ext )) continue;
         parse_functions[i].parse( file, f );
         break;
+    }
+    if (i == ARRAY_SIZE(parse_functions))
+    {
+        /* check for C++ header with no extension */
+        const char *dir = strstr( name, "/msvcrt/" );
+        if (dir && !strchr( dir, '.' )) parse_cxx_file( file, f );
     }
 
     fclose( f );
@@ -1506,12 +1584,37 @@ static struct makefile *find_importlib_module( const char *name )
 
     for (i = 0; i < subdirs.count; i++)
     {
-        if (strncmp( submakes[i]->obj_dir, "dlls/", 5 )) continue;
-        len = strlen(submakes[i]->obj_dir);
-        if (strncmp( submakes[i]->obj_dir + 5, name, len - 5 )) continue;
-        if (!name[len - 5] || !strcmp( name + len - 5, ".dll" )) return submakes[i];
+        const char *dir = skip_initial_dir( submakes[i]->obj_dir, "dlls" );
+        if (!dir) continue;
+        len = strlen(dir);
+        if (strncmp( dir, name, len )) continue;
+        if (!name[len] || !strcmp( name + len, ".dll" )) return submakes[i];
     }
     return NULL;
+}
+
+
+/*******************************************************************
+ *         is_external_header
+ */
+static bool is_external_header( struct incl_file *file )
+{
+    const char *filename = file->sourcename ? file->sourcename : file->file->name;
+    char *p, *name;
+
+    if (root_src_dir)
+    {
+        const char *relpath = skip_initial_dir( filename, root_src_dir );
+        if (relpath) filename = relpath;
+    }
+
+    name = xstrdup( filename );
+    while ((p = strrchr( name, '/' )))
+    {
+        *p = 0;
+        if (strarray_exists( external_dirs, name )) return true;
+    }
+    return false;
 }
 
 
@@ -1521,7 +1624,6 @@ static struct makefile *find_importlib_module( const char *name )
 static struct file *open_include_file( const struct makefile *make, struct incl_file *source )
 {
     struct file *file = NULL;
-    unsigned int len;
 
     errno = ENOENT;
 
@@ -1579,12 +1681,8 @@ static struct file *open_include_file( const struct makefile *make, struct incl_
     {
         if (root_src_dir)
         {
-            len = strlen( root_src_dir );
-            if (!strncmp( dir, root_src_dir, len ) && (!dir[len] || dir[len] == '/'))
-            {
-                while (dir[len] == '/') len++;
-                file = open_global_file( concat_paths( dir + len, source->name ), &source->filename );
-            }
+            const char *relpath = skip_initial_dir( dir, root_src_dir );
+            if (relpath) file = open_global_file( concat_paths( relpath, source->name ), &source->filename );
         }
         else
         {
@@ -1601,7 +1699,9 @@ static struct file *open_include_file( const struct makefile *make, struct incl_
     if ((file = open_same_dir_generated_file( make, source->included_by, source, ".h", ".idl" ))) return file;
     if ((file = open_file_same_dir( source->included_by, source->name, &source->filename ))) return file;
 
-    if (make->external) return NULL; /* ignore missing files in external libs */
+    /* ignore missing files in external libs */
+    if (make->external) return NULL;
+    if (source->included_by && is_external_header( source->included_by )) return NULL;
 
     fprintf( stderr, "%s:%d: error: ", source->included_by->file->name, source->included_line );
     perror( source->name );
@@ -1658,7 +1758,7 @@ static void parse_file( struct makefile *make, struct incl_file *source, bool sr
 
     if (strendswith( file->name, ".m" )) file->flags |= FLAG_C_UNIX;
     if (file->flags & FLAG_C_UNIX) source->use_msvcrt = false;
-    else if (file->flags & FLAG_C_IMPLIB) source->use_msvcrt = true;
+    else if (file->flags & (FLAG_C_IMPLIB | FLAG_C_CXX)) source->use_msvcrt = true;
 
     if (source->sourcename)
     {
@@ -2128,6 +2228,10 @@ static void get_dependencies( struct incl_file *file, struct incl_file *source )
     if (file != source)
     {
         if (file->owner == source) return;  /* already processed */
+        if (!(source->file->flags & FLAG_C_CXX)) /* ignore C++ dependencies for non-C++ sources */
+        {
+            if (file->file && (file->file->flags & FLAG_C_CXX)) return;
+        }
         if (file->type == INCL_IMPORTLIB)
         {
             if (!(source->file->flags & (FLAG_IDL_TYPELIB | FLAG_IDL_REGTYPELIB)))
@@ -2177,19 +2281,30 @@ static struct strarray get_local_dependencies( const struct makefile *make, cons
 
 
 /*******************************************************************
+ *         get_import_lib
+ *
+ * Find the makefile that builds the named import library.
+ */
+static struct makefile *get_import_lib( const char *name )
+{
+    for (unsigned int i = 0; i < subdirs.count; i++)
+        if (submakes[i]->importlib && !strcmp( submakes[i]->importlib, name )) return submakes[i];
+    return NULL;
+}
+
+
+/*******************************************************************
  *         get_static_lib
  *
- * Find the makefile that builds the named static library (which may be an import lib).
+ * Find the makefile that builds the named static library.
  */
-static struct makefile *get_static_lib( const char *name, unsigned int arch )
+static struct makefile *get_static_lib( const char *name )
 {
     unsigned int i;
 
     for (i = 0; i < subdirs.count; i++)
     {
-        if (submakes[i]->importlib && !strcmp( submakes[i]->importlib, name )) return submakes[i];
         if (!submakes[i]->staticlib) continue;
-        if (submakes[i]->disabled[arch]) continue;
         if (strncmp( submakes[i]->staticlib, "lib", 3 )) continue;
         if (strncmp( submakes[i]->staticlib + 3, name, strlen(name) )) continue;
         if (strcmp( submakes[i]->staticlib + 3 + strlen(name), ".a" )) continue;
@@ -2372,6 +2487,7 @@ static struct strarray add_import_libs( const struct makefile *make, struct stra
     STRARRAY_FOR_EACH( name, &imports )
     {
         struct makefile *submake;
+        const char *basename, *lib = NULL;
 
         /* add crt import lib only when adding the default imports libs */
         if (is_crt_module( name ) && type != IMPORT_TYPE_DEFAULT) continue;
@@ -2381,20 +2497,35 @@ static struct strarray add_import_libs( const struct makefile *make, struct stra
             switch (name[1])
             {
             case 'L': strarray_add( &ret, name ); continue;
-            case 'l': name += 2; break;
+            case 'l': basename = name + 2; break;
             default: continue;
             }
         }
-        else name = get_base_name( name );
+        else basename = get_base_name( name );
 
-        if ((submake = get_static_lib( name, link_arch )))
+        if ((submake = get_import_lib( basename )))
         {
             const char *ext = (type == IMPORT_TYPE_DELAYED && !delay_load_flags[arch]) ? ".delay.a" : ".a";
-            const char *lib = obj_dir_path( submake, strmake( "%slib%s%s", arch_dirs[arch], name, ext ));
-            strarray_add_uniq( deps, lib );
-            strarray_add( &ret, lib );
+            lib = obj_dir_path( submake, strmake( "%slib%s%s", arch_dirs[arch], basename, ext ));
+            goto found;
         }
-        else strarray_add( &ret, strmake( "-l%s", name ));
+        if ((submake = get_static_lib( basename )) && !submake->disabled[link_arch])
+        {
+            lib = obj_dir_path( submake, strmake( "%slib%s.a", arch_dirs[arch], basename ));
+            goto found;
+        }
+        if (name[0] == '-')  /* pass the original -l option to the linker */
+        {
+            strarray_add( &ret, name );
+            continue;
+        }
+        if (submake) continue;  /* ignore disabled lib */
+        input_file_name = src_dir_path( make, "Makefile.in" );
+        fatal_error( "library %s not found\n", basename );
+
+     found:
+        strarray_add_uniq( deps, lib );
+        strarray_add( &ret, lib );
     }
     return ret;
 }
@@ -2410,6 +2541,7 @@ static struct install_command *find_install_command( enum install_rules rules, s
 
     ARRAY_FOR_EACH( cmd, &install_commands[rules], struct install_command )
     {
+        if (cmd->dest) continue;
         if (strcmp( cmd->dir, dir )) continue;
         if (args.count != cmd->args.count) continue;
         for (i = 0; i < args.count; i++) if (strcmp( args.str[i], cmd->args.str[i] )) break;
@@ -3300,6 +3432,16 @@ static void output_source_nls( struct makefile *make, struct incl_file *source, 
 
 
 /*******************************************************************
+ *         output_source_dat
+ */
+static void output_source_dat( struct makefile *make, struct incl_file *source, const char *obj )
+{
+    install_data_file_src( make, source->name, source->name, "$(datadir)/wine/nls" );
+    output_srcdir_symlink( make, strmake( "%s.dat", obj ));
+}
+
+
+/*******************************************************************
  *         output_source_desktop
  */
 static void output_source_desktop( struct makefile *make, struct incl_file *source, const char *obj )
@@ -3429,6 +3571,7 @@ static void output_source_testdll( struct makefile *make, struct incl_file *sour
         if (link_arch) output_filenames( get_expanded_arch_var_array( make, "EXTRADLLFLAGS", link_arch ));
         if (!strcmp( ext, ".dll" )) output_filename( "-shared" );
         if (spec_file) output_filename( spec_file->filename );
+        if (strchr( obj, '.' )) output_filename( strmake( "-Wb,-F,%s%s", obj, ext ));
         output_filename( obj_name );
         if (hybrid_obj_name) output_filename( hybrid_obj_name );
         if (res_name) output_filename( res_name );
@@ -3467,6 +3610,45 @@ static void output_source_winmd( struct makefile *make, struct incl_file *source
 
 
 /*******************************************************************
+ *         output_source_nasm
+ */
+static void output_source_nasm( struct makefile *make, struct incl_file *source, const char *obj )
+{
+    struct strarray defines = get_source_defines( make, source, obj );
+    struct strarray targets = empty_strarray;
+    unsigned int arch;
+
+    if (!nasm) return;
+
+    for (arch = 1; arch < archs.count; arch++)
+    {
+        int cpu = get_cpu_from_name( archs.str[arch] );
+        const char *obj_name;
+
+        if (cpu != CPU_i386 && cpu != CPU_x86_64) continue;
+
+        obj_name = strmake( "%s%s.o", arch_dirs[arch], obj );
+        strarray_add( &targets, obj_name );
+        strarray_add( &make->object_files[arch], obj_name );
+
+        output( "%s: %s\n", obj_dir_path( make, obj_name ), source->filename );
+        output( "\t%s%s -o $@ %s", cmd_prefix( "AS" ), nasm, source->filename );
+        output_filename( cpu == CPU_i386 ? "-fwin32" : "-fwin64" );
+        output_filenames( defines );
+        output( "\n" );
+    }
+
+    if (targets.count && source->dependencies.count)
+    {
+        output_filenames_obj_dir( make, targets );
+        output( ":" );
+        output_filenames( source->dependencies );
+        output( "\n" );
+    }
+}
+
+
+/*******************************************************************
  *         output_source_one_arch
  */
 static void output_source_one_arch( struct makefile *make, struct incl_file *source, const char *obj,
@@ -3478,24 +3660,28 @@ static void output_source_one_arch( struct makefile *make, struct incl_file *sou
     struct strarray cflags = empty_strarray;
 
     if (make->disabled[arch] && !(source->file->flags & FLAG_C_IMPLIB)) return;
+    if (is_subdir_other_arch( source->name, arch )) return;
 
     if (arch)
     {
         if (source->file->flags & FLAG_C_UNIX) return;
         if (!is_multiarch( arch )) return;
         if (!is_using_msvcrt( make ) && !make->staticlib && !(source->file->flags & FLAG_C_IMPLIB)) return;
+        if ((source->file->flags & FLAG_C_CXX) && !get_expanded_arch_var( make, "CXX", arch )) return;
     }
     else if (source->file->flags & FLAG_C_UNIX)
     {
         if (!unix_lib_supported) return;
+    }
+    else if (source->file->flags & (FLAG_C_CXX | FLAG_C_ASM))
+    {
+        return;
     }
     else if (archs.count > 1 && is_using_msvcrt( make ))
     {
         if (!so_dll_supported) return;
         if (!(source->file->flags & FLAG_C_IMPLIB) && (!make->staticlib || make->external)) return;
     }
-
-    if (strendswith( source->name, ".S" ) && is_subdir_other_arch( source->name, arch )) return;
 
     obj_name = strmake( "%s%s.o", source->arch ? "" : arch_dirs[arch], obj );
     strarray_add( targets, obj_name );
@@ -3517,11 +3703,23 @@ static void output_source_one_arch( struct makefile *make, struct incl_file *sou
         strarray_add( &cflags, "-D__arm64ec_x64__" );
         strarray_addall( &cflags, get_expanded_make_var_array( top_makefile, "x86_64_EXTRACFLAGS" ));
     }
+    else if (source->file->flags & FLAG_C_CXX)
+    {
+        var_cc     = arch_make_variable( "CXX", arch );
+        var_cflags = arch_make_variable( "CXXFLAGS", arch );
+        if (make->external)
+            strarray_addall( &cflags, remove_warning_flags( extra_cxxflags[arch] ));
+        else
+            strarray_addall( &cflags, extra_cxxflags[arch] );
+    }
     else
     {
         var_cc     = arch_make_variable( "CC", arch );
         var_cflags = arch_make_variable( "CFLAGS", arch );
-        strarray_addall( &cflags, make->external ? extra_cflags_extlib[arch] : extra_cflags[arch] );
+        if (make->external)
+            strarray_addall( &cflags, remove_warning_flags( extra_cflags[arch] ));
+        else
+            strarray_addall( &cflags, extra_cflags[arch] );
     }
 
     if (!arch)
@@ -3604,6 +3802,12 @@ static void output_source_one_arch( struct makefile *make, struct incl_file *sou
         cmd->cmd = get_expanded_make_variable( make, "x86_64_CC" );
         if (cflags) strarray_add( &cmd->args, cflags );
     }
+    else if (source->file->flags & FLAG_C_CXX)
+    {
+        char *cflags = get_expanded_arch_var( make, "CXXFLAGS", arch );
+        cmd->cmd = get_expanded_arch_var( make, "CXX", arch );
+        if (cflags) strarray_add( &cmd->args, cflags );
+    }
     else
     {
         char *cflags = get_expanded_arch_var( make, "CFLAGS", arch );
@@ -3663,6 +3867,7 @@ static const struct
     { "l", output_source_l },
     { "h", output_source_h },
     { "rh", output_source_h },
+    { "inc", output_source_h },
     { "inl", output_source_h },
     { "ver", output_source_ver },
     { "rc", output_source_rc },
@@ -3672,6 +3877,7 @@ static const struct
     { "sfd", output_source_sfd },
     { "svg", output_source_svg },
     { "nls", output_source_nls },
+    { "dat", output_source_dat },
     { "desktop", output_source_desktop },
     { "po", output_source_po },
     { "in", output_source_in },
@@ -3679,6 +3885,7 @@ static const struct
     { "spec", output_source_spec },
     { "xml", output_source_xml },
     { "winmd", output_source_winmd },
+    { "asm", output_source_nasm },
     { NULL, output_source_default }
 };
 
@@ -3721,7 +3928,7 @@ static void output_module( struct makefile *make, unsigned int arch )
     struct strarray all_libs = empty_strarray;
     struct strarray dep_libs = empty_strarray;
     struct strarray imports = make->imports;
-    const char *module_name;
+    const char *p, *module_name;
     char *spec_file = NULL;
     unsigned int link_arch;
 
@@ -3754,7 +3961,7 @@ static void output_module( struct makefile *make, unsigned int arch )
         {
             STRARRAY_FOR_EACH( imp, &make->delayimports )
             {
-                struct makefile *import = get_static_lib( imp, arch );
+                struct makefile *import = get_import_lib( imp );
                 if (import) strarray_add( &all_libs, strmake( "%s%s", delay_load_flags[arch], import->module ));
             }
         }
@@ -3785,7 +3992,14 @@ static void output_module( struct makefile *make, unsigned int arch )
     output_winegcc_command( make, link_arch );
     if (arch) output_filename( "-Wl,--wine-builtin" );
     if (!make->is_exe) output_filename( "-shared" );
-    if (spec_file) output_filename( spec_file );
+    if (spec_file)
+    {
+        output_filename( spec_file );
+        if (strendswith( make->module, ".dll" ) &&
+            (p = strchr( make->module, '.' )) &&
+            (p < make->module + strlen(make->module) - strlen(".dll")))
+            output_filename( strmake( "-Wb,-F,%s", make->module ));
+    }
     output_filenames( make->extradllflags );
     if (link_arch) output_filenames( get_expanded_arch_var_array( make, "EXTRADLLFLAGS", link_arch ));
     output_filenames_obj_dir( make, make->object_files[arch] );
@@ -3950,11 +4164,6 @@ static void output_test_module( struct makefile *make, unsigned int arch )
     output( "\t%secho \"%s_test.exe TESTRES \\\"%s\\\"\" | %s -u -o $@\n", cmd_prefix( "WRC" ),
             basemodule, obj_dir_path( make, stripped ), wrc );
 
-    if (make->disabled[arch] || (parent && parent->disabled[arch]))
-    {
-        make->ok_files[arch] = empty_strarray;
-        return;
-    }
     output_filenames_obj_dir( make, make->ok_files[arch] );
     output( ": %s", obj_dir_path( make, testmodule ));
     if (parent)
@@ -4067,15 +4276,15 @@ static void output_subdirs( struct makefile *make )
         {
             if (submakes[i]->disabled[arch]) continue;
             strarray_addall_path( &all_targets, submakes[i]->obj_dir, submakes[i]->all_targets[arch] );
+            if (!submakes[i]->testdll) continue;
             strarray_addall_path( &testclean_files, submakes[i]->obj_dir, submakes[i]->ok_files[arch] );
+            strarray_addall_path( &buildtest_deps, submakes[i]->obj_dir, submakes[i]->all_targets[arch] );
         }
         if (submakes[i]->disabled[0]) continue;
 
         strarray_addall_path( &all_targets, submakes[i]->obj_dir, submakes[i]->font_files );
         if (!strcmp( submakes[i]->obj_dir, "tools" ) || !strncmp( submakes[i]->obj_dir, "tools/", 6 ))
-            strarray_add( &tooldeps_deps, obj_dir_path( submakes[i], "all" ));
-        if (submakes[i]->testdll)
-            strarray_add( &buildtest_deps, obj_dir_path( submakes[i], "all" ));
+            strarray_addall_path( &tooldeps_deps, submakes[i]->obj_dir, submakes[i]->all_targets[0] );
     }
     strarray_addall( &dependencies, makefile_deps );
     output( "all:" );
@@ -4137,9 +4346,10 @@ static void output_subdirs( struct makefile *make )
 
     if (tooldeps_deps.count)
     {
-        output( "__tooldeps__:" );
+        output( "tools __tooldeps__:" );
         output_filenames( tooldeps_deps );
         output( "\n" );
+        strarray_add_uniq( &make->phony_targets, "tools" );
         strarray_add_uniq( &make->phony_targets, "__tooldeps__" );
     }
 
@@ -4168,13 +4378,23 @@ static void output_sources( struct makefile *make )
         char *obj = xstrdup( source->name );
         char *ext = get_extension( obj );
 
-        if (!ext) fatal_error( "unsupported file type %s\n", source->name );
-        *ext++ = 0;
+        if (ext)
+        {
+            *ext++ = 0;
 
-        for (j = 0; output_source_funcs[j].ext; j++)
-            if (!strcmp( ext, output_source_funcs[j].ext )) break;
+            for (j = 0; output_source_funcs[j].ext; j++)
+                if (!strcmp( ext, output_source_funcs[j].ext )) break;
 
-        output_source_funcs[j].fn( make, source, obj );
+            output_source_funcs[j].fn( make, source, obj );
+        }
+        else
+        {
+            if (source->file->flags & FLAG_C_CXX)
+                output_source_h( make, source, obj );
+            else
+                fatal_error( "unsupported file type %s\n", source->name );
+        }
+
         strarray_addall_uniq( &make->dependencies, source->dependencies );
     }
 
@@ -4525,6 +4745,7 @@ static void output_silent_rules(void)
 {
     static const char *cmds[] =
     {
+        "AS",
         "BISON",
         "BUILD",
         "CC",
@@ -4601,7 +4822,7 @@ static void output_top_makefile( struct makefile *make )
             silent_rules ? " -S" : "" );
     strarray_add( &make->phony_targets, "depend" );
 
-    if (!strarray_exists( disabled_dirs[0], "tools/wine" ))
+    if (!strarray_exists( disabled_dirs, "tools/wine" ))
     {
         const char *loader = "tools/wine/wine";
         if (!strarray_exists( subdirs, "tools/wine" )) loader = tools_path( "wine" );
@@ -4668,7 +4889,7 @@ static void output_dependencies( struct makefile *make )
 static void load_sources( struct makefile *make )
 {
     unsigned int i, arch;
-    struct strarray value;
+    struct strarray value, enable_archs;
     struct incl_file *file;
 
     strarray_set_value( &make->vars, "top_srcdir", root_src_dir_path( "" ));
@@ -4687,22 +4908,45 @@ static void load_sources( struct makefile *make )
     make->delayimports  = get_expanded_make_var_array( make, "DELAYIMPORTS" );
     make->extradllflags = get_expanded_make_var_array( make, "EXTRADLLFLAGS" );
     make->extra_targets = get_expanded_make_var_array( make, "EXTRA_TARGETS" );
+    enable_archs        = get_expanded_make_var_array( make, "ENABLE_ARCHS" );
     for (i = 0; i < NB_INSTALL_RULES; i++)
         make->install[i] = get_expanded_make_var_array( make, install_variables[i] );
 
     if (make->staticlib) make->module = make->staticlib;
 
-    if (make->obj_dir)
-    {
-        make->disabled[0] = strarray_exists( disabled_dirs[0], make->obj_dir );
-        for (arch = 1; arch < archs.count; arch++)
-            make->disabled[arch] = make->disabled[0] || strarray_exists( disabled_dirs[arch], make->obj_dir );
-    }
     make->external   = make->obj_dir && strarray_exists( external_dirs, make->obj_dir );
     make->is_win16   = strarray_exists( make->extradllflags, "-m16" );
     make->data_only  = strarray_exists( make->extradllflags, "-Wb,--data-only" );
     make->is_exe     = strarray_exists( make->extradllflags, "-mconsole" ) ||
                        strarray_exists( make->extradllflags, "-mwindows" );
+
+    if (enable_archs.count)
+    {
+        for (arch = 0; arch < archs.count; arch++)
+        {
+            if (!is_multiarch( arch )) continue;
+            if (!strarray_exists( enable_archs, archs.str[arch] )) make->disabled[arch] = true;
+        }
+        if (strarray_exists( enable_archs, "none" )) make->disabled[0] = true;
+    }
+    else if (make->is_exe)  /* programs are disabled on arm64ec by default */
+    {
+        for (arch = 1; arch < archs.count; arch++) if (native_archs[arch]) make->disabled[arch] = true;
+    }
+
+    /* disable tests if the tested module is disabled */
+    if (make->testdll)
+    {
+        struct makefile *parent = get_parent_makefile( make );
+        for (arch = 0; arch < archs.count; arch++)
+        {
+            if (parent->disabled[arch]) make->disabled[arch] = true;
+            if (parent->is_exe && native_archs[arch]) make->disabled[arch] = true;
+        }
+    }
+
+    if (make->obj_dir && strarray_exists( disabled_dirs, make->obj_dir )) make->disabled[0] = true;
+    if (make->disabled[0]) for (arch = 1; arch < archs.count; arch++) make->disabled[arch] = true;
 
     /* add default install rules if nothing was specified */
     for (i = 0; i < NB_INSTALL_RULES; i++) if (make->install[i].count) break;
@@ -4726,12 +4970,8 @@ static void load_sources( struct makefile *make )
     {
         if (!strncmp( arg, "-I", 2 ))
         {
-            const char *dir = arg + 2;
-            if (!strncmp( dir, "./", 2 ))
-            {
-                dir += 2;
-                while (*dir == '/') dir++;
-            }
+            const char *dir = skip_initial_dir( arg + 2, "." );
+            if (!dir) dir = arg + 2;
             strarray_add_uniq( &make->include_paths, dir );
         }
         else if (!strncmp( arg, "-D", 2 ) || !strncmp( arg, "-U", 2 ))
@@ -4875,6 +5115,7 @@ int main( int argc, char *argv[] )
     lddll_flags        = get_expanded_make_var_array( top_makefile, "LDDLLFLAGS" );
     libs               = get_expanded_make_var_array( top_makefile, "LIBS" );
     enable_tests       = get_expanded_make_var_array( top_makefile, "ENABLE_TESTS" );
+    disabled_dirs      = get_expanded_make_var_array( top_makefile, "DISABLED_SUBDIRS" );
     external_dirs      = get_expanded_make_var_array( top_makefile, "EXTERNAL_SUBDIRS" );
     for (i = 0; i < NB_INSTALL_RULES; i++)
         top_install[i] = get_expanded_make_var_array( top_makefile, strmake( "TOP_%s", install_variables[i] ));
@@ -4889,6 +5130,7 @@ int main( int argc, char *argv[] )
     convert            = get_expanded_make_variable( top_makefile, "CONVERT" );
     flex               = get_expanded_make_variable( top_makefile, "FLEX" );
     bison              = get_expanded_make_variable( top_makefile, "BISON" );
+    nasm               = get_expanded_make_variable( top_makefile, "NASM" );
     rsvg               = get_expanded_make_variable( top_makefile, "RSVG" );
     icotool            = get_expanded_make_variable( top_makefile, "ICOTOOL" );
     msgfmt             = get_expanded_make_variable( top_makefile, "MSGFMT" );
@@ -4899,6 +5141,7 @@ int main( int argc, char *argv[] )
 
     if (root_src_dir && !strcmp( root_src_dir, "." )) root_src_dir = NULL;
     if (tools_dir && !strcmp( tools_dir, "." )) tools_dir = NULL;
+    if (nasm && !strcmp( nasm, "false" )) nasm = NULL;
     if (!exe_ext) exe_ext = "";
     if (!dll_ext[0]) dll_ext[0] = "";
     if (!tools_ext) tools_ext = "";
@@ -4950,8 +5193,7 @@ int main( int argc, char *argv[] )
     {
         arch_pe_dirs[arch] = strmake( "%s-windows", archs.str[arch] );
         extra_cflags[arch] = get_expanded_arch_var_array( top_makefile, "EXTRACFLAGS", arch );
-        extra_cflags_extlib[arch] = remove_warning_flags( extra_cflags[arch] );
-        disabled_dirs[arch] = get_expanded_arch_var_array( top_makefile, "DISABLED_SUBDIRS", arch );
+        extra_cxxflags[arch] = get_expanded_arch_var_array( top_makefile, "EXTRACXXFLAGS", arch );
         if (!is_multiarch( arch )) continue;
         delay_load_flags[arch] = get_expanded_arch_var( top_makefile, "DELAYLOADFLAG", arch );
         debug_flags[arch] = get_expanded_arch_var_array( top_makefile, "DEBUG", arch );

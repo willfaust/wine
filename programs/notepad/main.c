@@ -389,7 +389,7 @@ void NOTEPAD_DoFind(FINDREPLACEW *fr)
     DWORD pos;
 
     fileLen = GetWindowTextLengthW(Globals.hEdit) + 1;
-    content = HeapAlloc(GetProcessHeap(), 0, fileLen * sizeof(WCHAR));
+    content = malloc(fileLen * sizeof(WCHAR));
     if (!content) return;
     GetWindowTextW(Globals.hEdit, content, fileLen);
 
@@ -412,7 +412,7 @@ void NOTEPAD_DoFind(FINDREPLACEW *fr)
             return;
     }
     pos = found - content;
-    HeapFree(GetProcessHeap(), 0, content);
+    free(content);
 
     if (!found)
     {
@@ -433,7 +433,7 @@ static void NOTEPAD_DoReplace(FINDREPLACEW *fr)
     DWORD pos_start;
 
     fileLen = GetWindowTextLengthW(Globals.hEdit) + 1;
-    content = HeapAlloc(GetProcessHeap(), 0, fileLen * sizeof(WCHAR));
+    content = malloc(fileLen * sizeof(WCHAR));
     if (!content) return;
     GetWindowTextW(Globals.hEdit, content, fileLen);
 
@@ -451,42 +451,34 @@ static void NOTEPAD_DoReplace(FINDREPLACEW *fr)
         default:    /* shouldn't happen */
             return;
     }
-    HeapFree(GetProcessHeap(), 0, content);
+    free(content);
 
     NOTEPAD_DoFind(fr);
 }
 
 static void NOTEPAD_DoReplaceAll(FINDREPLACEW *fr)
 {
-    LPWSTR content;
+    WCHAR *content, *found;
     int len = lstrlenW(fr->lpstrFindWhat);
     int fileLen;
-    SIZE_T pos;
+    DWORD pos;
 
     SendMessageW(Globals.hEdit, EM_SETSEL, 0, 0);
     while(TRUE){
         fileLen = GetWindowTextLengthW(Globals.hEdit) + 1;
-        content = HeapAlloc(GetProcessHeap(), 0, fileLen * sizeof(WCHAR));
+        content = malloc(fileLen * sizeof(WCHAR));
         if (!content) return;
         GetWindowTextW(Globals.hEdit, content, fileLen);
 
         SendMessageW(Globals.hEdit, EM_GETSEL, 0, (LPARAM)&pos);
-        switch (fr->Flags & (FR_DOWN|FR_MATCHCASE))
-        {
-            case FR_DOWN:
-                pos = StrStrIW(content+pos, fr->lpstrFindWhat) - content;
-                if (pos == -(SIZE_T)content) pos = ~(SIZE_T)0;
-                break;
-            case FR_DOWN|FR_MATCHCASE:
-                pos = StrStrW(content+pos, fr->lpstrFindWhat) - content;
-                if (pos == -(SIZE_T)content) pos = ~(SIZE_T)0;
-                break;
-            default:    /* shouldn't happen */
-                return;
-        }
-        HeapFree(GetProcessHeap(), 0, content);
+        if (fr->Flags & FR_MATCHCASE)
+            found = StrStrW(content + pos, fr->lpstrFindWhat);
+        else
+            found = StrStrIW(content + pos, fr->lpstrFindWhat);
+        pos = found - content;
+        free(content);
 
-        if(pos == ~(SIZE_T)0)
+        if (!found)
         {
             SendMessageW(Globals.hEdit, EM_SETSEL, 0, 0);
             return;
@@ -782,9 +774,7 @@ int PASCAL WinMain(HINSTANCE hInstance, HINSTANCE prev, LPSTR cmdline, int show)
     MSG msg;
     HACCEL hAccel;
     WNDCLASSEXW class;
-    HMONITOR monitor;
-    MONITORINFO info;
-    INT x, y;
+    WINDOWPLACEMENT wp;
 
     InitCommonControls();
 
@@ -810,21 +800,8 @@ int PASCAL WinMain(HINSTANCE hInstance, HINSTANCE prev, LPSTR cmdline, int show)
     if (!RegisterClassExW(&class)) return FALSE;
 
     /* Setup windows */
-
-    monitor = MonitorFromRect( &main_rect, MONITOR_DEFAULTTOPRIMARY );
-    info.cbSize = sizeof(info);
-    GetMonitorInfoW( monitor, &info );
-
-    x = main_rect.left;
-    y = main_rect.top;
-    if (main_rect.left >= info.rcWork.right ||
-        main_rect.top >= info.rcWork.bottom ||
-        main_rect.right < info.rcWork.left ||
-        main_rect.bottom < info.rcWork.top)
-        x = y = CW_USEDEFAULT;
-
     Globals.hMainWnd =
-        CreateWindowW(L"Notepad", L"Notepad", WS_OVERLAPPEDWINDOW, x, y,
+        CreateWindowW(L"Notepad", L"Notepad", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
                       main_rect.right - main_rect.left, main_rect.bottom - main_rect.top,
                       NULL, NULL, Globals.hInstance, NULL);
     if (!Globals.hMainWnd)
@@ -836,7 +813,15 @@ int PASCAL WinMain(HINSTANCE hInstance, HINSTANCE prev, LPSTR cmdline, int show)
     NOTEPAD_InitData();
     DIALOG_FileNew();
 
-    ShowWindow(Globals.hMainWnd, show);
+    wp.length = sizeof(wp);
+    wp.flags = 0;
+    wp.showCmd = show;
+    wp.ptMinPosition.x = -1;
+    wp.ptMinPosition.y = -1;
+    wp.ptMaxPosition.x = -1;
+    wp.ptMaxPosition.y = -1;
+    wp.rcNormalPosition = main_rect;
+    SetWindowPlacement(Globals.hMainWnd, &wp);
     UpdateWindow(Globals.hMainWnd);
     DragAcceptFiles(Globals.hMainWnd, TRUE);
 

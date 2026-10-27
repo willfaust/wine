@@ -31,6 +31,7 @@
 #include "wine/debug.h"
 
 #include "mf_private.h"
+#include "intsafe.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(mfplat);
 
@@ -123,6 +124,9 @@ static struct seq_source *impl_from_IMFMediaSourceTopologyProvider(IMFMediaSourc
 
 static HRESULT topology_node_reserve_streams(struct node_streams *streams, DWORD index)
 {
+    if (index == DWORD_MAX)
+        return E_OUTOFMEMORY;
+
     if (!mf_array_reserve((void **)&streams->streams, &streams->size, index + 1, sizeof(*streams->streams)))
         return E_OUTOFMEMORY;
 
@@ -863,7 +867,7 @@ static TOPOID topology_generate_id(void)
     }
     while (InterlockedCompareExchange64((LONG64 *)&next_topology_id, old + 1, old) != old);
 
-    return next_topology_id;
+    return old + 1;
 }
 
 HRESULT create_topology(TOPOID id, IMFTopology **topology)
@@ -1645,7 +1649,6 @@ static HRESULT WINAPI topology_node_GetInputPrefType(IMFTopologyNode *iface, DWO
 static HRESULT WINAPI topology_node_CloneFrom(IMFTopologyNode *iface, IMFTopologyNode *src_node)
 {
     struct topology_node *node = impl_from_IMFTopologyNode(iface);
-    MF_TOPOLOGY_TYPE node_type;
     IMFMediaType *mediatype;
     IUnknown *object;
     DWORD count, i;
@@ -1654,10 +1657,7 @@ static HRESULT WINAPI topology_node_CloneFrom(IMFTopologyNode *iface, IMFTopolog
 
     TRACE("%p, %p.\n", iface, src_node);
 
-    if (FAILED(hr = IMFTopologyNode_GetNodeType(src_node, &node_type)))
-        return hr;
-
-    if (node->node_type != node_type)
+    if (node->node_type != topology_node_get_type(src_node))
         return MF_E_INVALIDREQUEST;
 
     if (FAILED(hr = IMFTopologyNode_GetTopoNodeID(src_node, &topoid)))
@@ -1781,6 +1781,20 @@ static HRESULT create_topology_node(MF_TOPOLOGY_TYPE node_type, struct topology_
     InitializeCriticalSection(&(*node)->cs);
 
     return S_OK;
+}
+
+MF_TOPOLOGY_TYPE topology_node_get_type(IMFTopologyNode *node)
+{
+    MF_TOPOLOGY_TYPE type;
+    HRESULT hr;
+
+    if (FAILED(hr = IMFTopologyNode_GetNodeType(node, &type)))
+    {
+        ERR("Failed to get node type, hr %#lx.\n", hr);
+        return -1;
+    }
+
+    return type;
 }
 
 HRESULT topology_node_get_object(IMFTopologyNode *node, REFIID riid, void **obj)
@@ -2013,10 +2027,7 @@ HRESULT topology_node_get_type_handler(IMFTopologyNode *node, DWORD stream,
     IMFTransform *transform;
     HRESULT hr;
 
-    if (FAILED(hr = IMFTopologyNode_GetNodeType(node, &node_type)))
-        return hr;
-
-    switch (node_type)
+    switch ((node_type = topology_node_get_type(node)))
     {
         case MF_TOPOLOGY_OUTPUT_NODE:
             if (output || stream)

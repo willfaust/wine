@@ -198,12 +198,6 @@ static PS_ATTRIBUTE_LIST *ps_attributes_32to64( PS_ATTRIBUTE_LIST **attr, const 
             ret->Attributes[i].Size     = sizeof(HANDLE);
             ret->Attributes[i].ValuePtr = LongToHandle( attr32->Attributes[i].Value );
             break;
-        case PS_ATTRIBUTE_GROUP_AFFINITY:
-            /* Window boundary: an INPUT pointer to a GROUP_AFFINITY the 64-bit side
-             * dereferences (ntdll's update_attr_list).  The struct has the same
-             * layout for both word sizes, so only the pointer converts. */
-            ret->Attributes[i].ValuePtr = guest_ptr32( attr32->Attributes[i].Value );
-            break;
         case PS_ATTRIBUTE_CLIENT_ID:
             ret->Attributes[i].Size     = sizeof(CLIENT_ID);
             ret->Attributes[i].ValuePtr = Wow64AllocateTemp( ret->Attributes[i].Size );
@@ -215,6 +209,20 @@ static PS_ATTRIBUTE_LIST *ps_attributes_32to64( PS_ATTRIBUTE_LIST **attr, const 
         case PS_ATTRIBUTE_TEB_ADDRESS:
             ret->Attributes[i].Size     = sizeof(TEB *);
             ret->Attributes[i].ValuePtr = Wow64AllocateTemp( ret->Attributes[i].Size );
+            break;
+        case PS_ATTRIBUTE_GROUP_AFFINITY:
+            {
+                GROUP_AFFINITY32 *aff32 = guest_ptr32( attr32->Attributes[i].Value );
+                GROUP_AFFINITY *aff64;
+                ret->Attributes[i].Size     = sizeof(GROUP_AFFINITY);
+                ret->Attributes[i].ValuePtr = Wow64AllocateTemp( ret->Attributes[i].Size );
+                aff64 = ret->Attributes[i].ValuePtr;
+                aff64->Mask = aff32->Mask;
+                aff64->Group = aff32->Group;
+                aff64->Reserved[0] = aff32->Reserved[0];
+                aff64->Reserved[1] = aff32->Reserved[1];
+                aff64->Reserved[2] = aff32->Reserved[2];
+            }
             break;
         }
     }
@@ -1219,7 +1227,7 @@ NTSTATUS WINAPI wow64_NtTerminateThread( UINT *args )
 
 
 /**********************************************************************
- *           wow64_NtTerminateThread
+ *           wow64_NtWorkerFactoryWorkerReady
  */
 NTSTATUS WINAPI wow64_NtWorkerFactoryWorkerReady( UINT *args )
 {
