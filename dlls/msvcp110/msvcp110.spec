@@ -1230,7 +1230,7 @@
 @ cdecl -arch=win32 ?_GetCombinableSize@details@Concurrency@@YAIXZ() _GetCombinableSize
 @ cdecl -arch=win64 ?_GetCombinableSize@details@Concurrency@@YA_KXZ() _GetCombinableSize
 @ stub ?_GetCurrentThreadId@details@Concurrency@@YAKXZ
-@ stub ?_GetNextAsyncId@details@Concurrency@@YAIXZ
+@ cdecl ?_GetNextAsyncId@details@Concurrency@@YAIXZ() GetNextAsyncId
 @ stub -arch=win32 ?_Get_future_error_what@std@@YAPBDH@Z
 @ stub -arch=win64 ?_Get_future_error_what@std@@YAPEBDH@Z
 @ cdecl -arch=win32 ?_Getcat@?$codecvt@DDH@std@@SAIPAPBVfacet@locale@2@PBV42@@Z(ptr ptr) codecvt_char__Getcat
@@ -3738,7 +3738,7 @@
 @ cdecl _Cnd_timedwait(ptr ptr ptr)
 @ cdecl _Cnd_unregister_at_thread_exit(ptr)
 @ cdecl _Cnd_wait(ptr ptr)
-@ stub _Cosh
+@ cdecl _Cosh(double double)
 @ extern _Denorm
 @ stub _Dint
 @ stub _Dnorm
@@ -3749,7 +3749,7 @@
 @ stub _Dunscale
 @ extern _Eps
 @ cdecl _Exp(ptr double long)
-@ stub _FCosh
+@ cdecl _FCosh(float float)
 @ extern _FDenorm
 @ stub _FDint
 @ stub _FDnorm
@@ -3762,7 +3762,7 @@
 @ extern _FInf
 @ extern _FNan
 # extern _FRteps
-@ stub _FSinh
+@ cdecl _FSinh(float float)
 @ extern _FSnan
 # extern _FXbig
 @ stub _FXp_addh
@@ -3786,7 +3786,7 @@
 @ cdecl _Getwctypes(ptr ptr ptr ptr)
 @ extern _Hugeval
 @ extern _Inf
-@ stub _LCosh
+@ cdecl _LCosh(double double) _Cosh
 @ extern _LDenorm
 @ stub _LDint
 @ cdecl _LDscale(ptr long) _Dscale
@@ -3799,7 +3799,7 @@
 @ extern _LNan
 @ stub _LPoly
 # extern _LRteps
-@ stub _LSinh
+@ cdecl _LSinh(double double) _Sinh
 @ extern _LSnan
 # extern _LXbig
 @ stub _LXp_addh
@@ -3835,7 +3835,7 @@
 @ stub _Once
 @ stub _Poly
 # extern _Rteps
-@ stub _Sinh
+@ cdecl _Sinh(double double)
 @ extern _Snan
 @ cdecl _Stod(ptr ptr long)
 @ cdecl _Stodx(ptr ptr long ptr)

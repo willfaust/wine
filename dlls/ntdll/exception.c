@@ -140,6 +140,49 @@ static ULONG remove_vectored_handler( LIST_ENTRY *handler_list, VECTORED_HANDLER
     return ret;
 }
 
+#if defined(__x86_64__) && !defined(__arm64ec__)
+/*
+ * Some vectored exception handlers restore nonvolatile registers before
+ * returning. Preserve the caller state across the callback.
+ */
+extern LONG WINAPI call_vectored_handler( EXCEPTION_POINTERS *ptr, PVECTORED_EXCEPTION_HANDLER func );
+__ASM_GLOBAL_FUNC( call_vectored_handler,
+                    "pushq %rbx\n\t"
+                    __ASM_SEH(".seh_pushreg %rbx\n\t")
+                    "pushq %rsi\n\t"
+                    __ASM_SEH(".seh_pushreg %rsi\n\t")
+                    "pushq %rdi\n\t"
+                    __ASM_SEH(".seh_pushreg %rdi\n\t")
+                    "pushq %rbp\n\t"
+                    __ASM_SEH(".seh_pushreg %rbp\n\t")
+                    "pushq %r12\n\t"
+                    __ASM_SEH(".seh_pushreg %r12\n\t")
+                    "pushq %r13\n\t"
+                    __ASM_SEH(".seh_pushreg %r13\n\t")
+                    "pushq %r14\n\t"
+                    __ASM_SEH(".seh_pushreg %r14\n\t")
+                    "pushq %r15\n\t"
+                    __ASM_SEH(".seh_pushreg %r15\n\t")
+                    "subq $0x28,%rsp\n\t"
+                    __ASM_SEH(".seh_stackalloc 0x28\n\t")
+                    __ASM_SEH(".seh_endprologue\n\t")
+                    "callq *%rdx\n\t"
+                    "addq $0x28,%rsp\n\t"
+                    "popq %r15\n\t"
+                    "popq %r14\n\t"
+                    "popq %r13\n\t"
+                    "popq %r12\n\t"
+                    "popq %rbp\n\t"
+                    "popq %rdi\n\t"
+                    "popq %rsi\n\t"
+                    "popq %rbx\n\t"
+                    "ret" )
+#else
+static inline LONG call_vectored_handler( EXCEPTION_POINTERS *ptr, PVECTORED_EXCEPTION_HANDLER func )
+{
+    return func( ptr );
+}
+#endif
 
 /**********************************************************************
  *           call_vectored_handlers
@@ -164,7 +207,6 @@ static LONG call_vectored_handlers( EXCEPTION_RECORD *rec, CONTEXT *context )
     while (entry != mark)
     {
         handler = CONTAINING_RECORD( entry, VECTORED_HANDLER, entry );
-        entry = entry->Flink;
         ++*handler->count;
         func = RtlDecodePointer( handler->func );
         RtlLeaveCriticalSection( &vectored_handlers_section );
@@ -207,7 +249,7 @@ static LONG call_vectored_handlers( EXCEPTION_RECORD *rec, CONTEXT *context )
          * 0xf8 an ARM64_NT_CONTEXT holds Lr, and at Rsp's 0x98 it holds X19). */
         CONTEXT veh_saved = *context;
 #endif
-        ret = func( &except_ptrs );
+        ret = call_vectored_handler( &except_ptrs, func );
 #ifdef __arm64ec__
         if (rec->ExceptionCode == STATUS_ACCESS_VIOLATION)
         {
@@ -261,6 +303,7 @@ static LONG call_vectored_handlers( EXCEPTION_RECORD *rec, CONTEXT *context )
         TRACE( "handler at %p returned %lx\n", func, ret );
 
         RtlEnterCriticalSection( &vectored_handlers_section );
+        entry = entry->Flink;
         if (!--*handler->count)  /* removed during execution */
         {
             RemoveEntryList( &handler->entry );
@@ -1161,9 +1204,6 @@ NTSTATUS WINAPI RtlCopyExtendedContext( CONTEXT_EX *dst, ULONG context_flags, CO
     dst_xs->Mask = (src_xs->Mask & ~(ULONG64)3) & feature_mask;
     dst_xs->CompactionMask = user_shared_data->XState.CompactionEnabled
             ? ((ULONG64)1 << 63) | (src_xs->CompactionMask & feature_mask) : 0;
-
-
-    if (dst_xs->CompactionMask) feature_mask &= dst_xs->CompactionMask;
     feature_mask = dst_xs->Mask >> 2;
 
     i = 2;

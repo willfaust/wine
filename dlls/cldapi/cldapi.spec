@@ -11,13 +11,13 @@
 @ stub CfExecute
 @ stub CfGetCorrelationVector
 @ stub CfGetLastSyncStatus
-@ stub CfGetPlaceholderInfo
+@ stdcall CfGetPlaceholderInfo(ptr long ptr long ptr)
 @ stub CfGetPlaceholderRangeInfo
 @ stub CfGetPlaceholderRangeInfoForHydration
 @ stub CfGetPlaceholderStateFromAttributeTag
 @ stub CfGetPlaceholderStateFromFileInfo
 @ stub CfGetPlaceholderStateFromFindData
-@ stub CfGetPlatformInfo
+@ stdcall CfGetPlatformInfo(ptr)
 @ stub CfGetSyncRootInfoByHandle
 @ stub CfGetSyncRootInfoByPath
 @ stub CfGetTransferKey

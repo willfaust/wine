@@ -84,6 +84,7 @@ NTSYSAPI const WCHAR *ntdll_get_build_dir(void);
 NTSYSAPI const WCHAR *ntdll_get_data_dir(void);
 NTSYSAPI NTSTATUS ntdll_get_dos_file_name( const char *unix_name, WCHAR **dos, UINT disposition );
 NTSYSAPI NTSTATUS ntdll_get_unix_file_name( const WCHAR *dos, char **unix_name, UINT disposition );
+NTSYSAPI NTSTATUS ntdll_unmount_device( int fd, char *mount_point );
 
 /* exception handling */
 
@@ -292,6 +293,11 @@ NTSYSAPI DWORD ntdll_umbstowcs( const char *src, DWORD srclen, WCHAR *dst, DWORD
 NTSYSAPI int ntdll_wcstoumbs( const WCHAR *src, DWORD srclen, char *dst, DWORD dstlen, BOOL strict );
 NTSYSAPI int ntdll_wcsicmp( const WCHAR *str1, const WCHAR *str2 );
 NTSYSAPI int ntdll_wcsnicmp( const WCHAR *str1, const WCHAR *str2, int n );
+
+/* C23 requires these functions to be defined as macros */
+#undef wcschr
+#undef wcsrchr
+#undef wcspbrk
 
 #define iswspace(ch)       ntdll_iswspace(ch)
 #define wcslen(str)        ntdll_wcslen(str)

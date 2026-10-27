@@ -1312,6 +1312,7 @@ cards_nvidia_binary[] =
     {"Tesla T4",                    CARD_NVIDIA_TESLA_T4},
     {"Ampere A10",                  CARD_NVIDIA_AMPERE_A10},
     {"NVIDIA A10G",                 CARD_NVIDIA_AMPERE_A10G},
+    {"NVIDIA L4",                   CARD_NVIDIA_L4},
     {"RTX 3090 Ti",                 CARD_NVIDIA_GEFORCE_RTX3090TI},
     {"RTX 3090",                    CARD_NVIDIA_GEFORCE_RTX3090},
     {"RTX 3080 Ti",                 CARD_NVIDIA_GEFORCE_RTX3080TI},
@@ -1668,6 +1669,8 @@ cards_amd_mesa[] =
 {
     /* Navi 4x */
     {"gfx1200",                     CARD_AMD_RADEON_RX_NAVI_44},
+    /* Navi 2x */
+    {"rembrandt",                   CARD_AMD_RADEON_680M},
     /* Navi 10/14 */
     {"NAVI10",                      CARD_AMD_RADEON_RX_NAVI_10},
     {"NAVI14",                      CARD_AMD_RADEON_RX_NAVI_14},

@@ -24,6 +24,7 @@
 #include "initguid.h"
 #include "hid.h"
 #include "devguid.h"
+#include "devpkey.h"
 #include "ntddmou.h"
 #include "ntddkbd.h"
 #include "ddk/hidtypes.h"
@@ -68,35 +69,6 @@ static minidriver *find_minidriver(DRIVER_OBJECT *driver)
     return NULL;
 }
 
-static NTSTATUS get_device_id(DEVICE_OBJECT *device, BUS_QUERY_ID_TYPE type, WCHAR *id)
-{
-    IO_STACK_LOCATION *irpsp;
-    IO_STATUS_BLOCK irp_status;
-    KEVENT event;
-    IRP *irp;
-
-    KeInitializeEvent(&event, NotificationEvent, FALSE);
-    irp = IoBuildSynchronousFsdRequest(IRP_MJ_PNP, device, NULL, 0, NULL, &event, &irp_status);
-    if (irp == NULL)
-        return STATUS_NO_MEMORY;
-
-    irpsp = IoGetNextIrpStackLocation(irp);
-    irpsp->MinorFunction = IRP_MN_QUERY_ID;
-    irpsp->Parameters.QueryId.IdType = type;
-
-    irp->IoStatus.Status = STATUS_NOT_SUPPORTED;
-    if (IoCallDriver(device, irp) == STATUS_PENDING)
-        KeWaitForSingleObject(&event, Executive, KernelMode, FALSE, NULL);
-
-    if (!irp_status.Status)
-    {
-        wcscpy(id, (WCHAR *)irp_status.Information);
-        ExFreePool((WCHAR *)irp_status.Information);
-    }
-
-    return irp_status.Status;
-}
-
 /* user32 reserves 1 & 2 for winemouse and winekeyboard,
  * keep this in sync with user_private.h */
 #define WINE_MOUSE_HANDLE 1
@@ -132,28 +104,28 @@ static void send_wm_input_device_change( struct phys_device *pdo, LPARAM param )
 
 static NTSTATUS WINAPI driver_add_device(DRIVER_OBJECT *driver, DEVICE_OBJECT *bus_pdo)
 {
-    WCHAR device_id[MAX_DEVICE_ID_LEN], instance_id[MAX_DEVICE_ID_LEN];
+    WCHAR device_id[MAX_DEVICE_ID_LEN] = { 0 };
     struct func_device *fdo;
     BOOL is_xinput_class;
     DEVICE_OBJECT *device;
+    WCHAR *instance_id;
+    DEVPROPTYPE type;
     NTSTATUS status;
+    DWORD size;
     minidriver *minidriver;
 
-    if ((status = get_device_id(bus_pdo, BusQueryDeviceID, device_id)))
+    if ((status = IoGetDevicePropertyData( bus_pdo, &DEVPKEY_Device_InstanceId, LOCALE_NEUTRAL, 0,
+                    sizeof(device_id), device_id, &size, &type )))
     {
-        ERR( "Failed to get PDO device id, status %#lx.\n", status );
+        ERR( "Failed to get PDO device instance id, status %#lx.\n", status );
         return status;
     }
 
-    if ((status = get_device_id(bus_pdo, BusQueryInstanceID, instance_id)))
-    {
-        ERR( "Failed to get PDO instance id, status %#lx.\n", status );
-        return status;
-    }
-
-    TRACE("Adding device to PDO %p, id %s\\%s.\n", bus_pdo, debugstr_w(device_id), debugstr_w(instance_id));
+    TRACE("Adding device to PDO %p, id %s.\n", bus_pdo, debugstr_w(device_id));
     minidriver = find_minidriver(driver);
 
+    instance_id = wcsrchr( device_id, '\\' );
+    *instance_id++ = 0;
     if ((status = IoCreateDevice( driver, sizeof(*fdo) + minidriver->minidriver.DeviceExtensionSize,
                                   NULL, FILE_DEVICE_BUS_EXTENDER, 0, FALSE, &device )))
     {
@@ -167,9 +139,6 @@ static NTSTATUS WINAPI driver_add_device(DRIVER_OBJECT *driver, DEVICE_OBJECT *b
     fdo->base.hid.NextDeviceObject = bus_pdo;
     swprintf( fdo->base.device_id, ARRAY_SIZE(fdo->base.device_id), L"HID\\%s", wcsrchr( device_id, '\\' ) + 1 );
     wcscpy( fdo->base.instance_id, instance_id );
-
-    if (get_device_id( bus_pdo, BusQueryContainerID, fdo->base.container_id ))
-        fdo->base.container_id[0] = 0;
 
     is_xinput_class = !wcsncmp(device_id, L"WINEXINPUT\\", 7) && wcsstr(device_id, L"&XI_") != NULL;
     if (is_xinput_class) fdo->base.class_guid = &GUID_DEVINTERFACE_WINEXINPUT;
@@ -218,7 +187,6 @@ static NTSTATUS get_hid_device_desc( minidriver *minidriver, DEVICE_OBJECT *devi
 static NTSTATUS initialize_device( minidriver *minidriver, DEVICE_OBJECT *device )
 {
     struct func_device *fdo = fdo_from_DEVICE_OBJECT( device );
-    ULONG index = HID_STRING_ID_ISERIALNUMBER;
     IO_STATUS_BLOCK io;
     NTSTATUS status;
 
@@ -227,14 +195,6 @@ static NTSTATUS initialize_device( minidriver *minidriver, DEVICE_OBJECT *device
     if (io.Status != STATUS_SUCCESS)
     {
         ERR( "Minidriver failed to get attributes, status %#lx.\n", io.Status );
-        return io.Status;
-    }
-
-    call_minidriver( IOCTL_HID_GET_STRING, device, ULongToPtr(index), sizeof(index),
-                     &fdo->serial, sizeof(fdo->serial), &io );
-    if (io.Status != STATUS_SUCCESS)
-    {
-        ERR( "Minidriver failed to get serial number, status %#lx.\n", io.Status );
         return io.Status;
     }
 
@@ -260,23 +220,14 @@ static NTSTATUS create_child_pdos( minidriver *minidriver, DEVICE_OBJECT *device
     struct func_device *fdo = fdo_from_DEVICE_OBJECT( device );
     DEVICE_OBJECT *child_device;
     struct phys_device *pdo;
-    UNICODE_STRING string;
-    WCHAR pdo_name[255];
     USAGE page, usage;
     NTSTATUS status;
     INT i;
 
     for (i = 0; i < fdo->device_desc.CollectionDescLength; ++i)
     {
-        if (fdo->device_desc.CollectionDescLength > 1)
-            swprintf( pdo_name, ARRAY_SIZE(pdo_name), L"\\Device\\HID#%p&%p&%d", device->DriverObject,
-                      fdo->base.hid.PhysicalDeviceObject, i );
-        else
-            swprintf( pdo_name, ARRAY_SIZE(pdo_name), L"\\Device\\HID#%p&%p", device->DriverObject,
-                      fdo->base.hid.PhysicalDeviceObject );
-
-        RtlInitUnicodeString(&string, pdo_name);
-        if ((status = IoCreateDevice( device->DriverObject, sizeof(*pdo), &string, 0, 0, FALSE, &child_device )))
+        if ((status = IoCreateDevice( device->DriverObject, sizeof(*pdo), NULL,
+                                      FILE_DEVICE_UNKNOWN, FILE_AUTOGENERATED_DEVICE_NAME, FALSE, &child_device )))
         {
             ERR( "Failed to create child PDO, status %#lx.\n", status );
             return status;
@@ -297,15 +248,12 @@ static NTSTATUS create_child_pdos( minidriver *minidriver, DEVICE_OBJECT *device
         {
             swprintf( pdo->base.device_id, ARRAY_SIZE(pdo->base.device_id), L"%s&Col%02d",
                       fdo->base.device_id, pdo->collection_desc->CollectionNumber );
-            swprintf( pdo->base.instance_id, ARRAY_SIZE(pdo->base.instance_id), L"%u&%s&%x&%u&%04u",
-                      fdo->attrs.VersionNumber, fdo->serial, 0, 0, i );
         }
         else
         {
             wcscpy( pdo->base.device_id, fdo->base.device_id );
-            wcscpy( pdo->base.instance_id, fdo->base.instance_id );
         }
-        wcscpy( pdo->base.container_id, fdo->base.container_id );
+        swprintf( pdo->base.instance_id, ARRAY_SIZE(pdo->base.instance_id), L"%04u", i );
         pdo->base.class_guid = fdo->base.class_guid;
 
         pdo->information.VendorID = fdo->attrs.VendorID;
@@ -488,18 +436,6 @@ static WCHAR *query_instance_id(DEVICE_OBJECT *device)
     return dst;
 }
 
-static WCHAR *query_container_id(DEVICE_OBJECT *device)
-{
-    struct device *ext = device->DeviceExtension;
-    DWORD size = (wcslen(ext->container_id) + 1) * sizeof(WCHAR);
-    WCHAR *dst;
-
-    if ((dst = ExAllocatePool(PagedPool, size)))
-        memcpy(dst, ext->container_id, size);
-
-    return dst;
-}
-
 static NTSTATUS pdo_pnp( DEVICE_OBJECT *device, IRP *irp )
 {
     IO_STACK_LOCATION *irpsp = IoGetCurrentIrpStackLocation(irp);
@@ -539,12 +475,8 @@ static NTSTATUS pdo_pnp( DEVICE_OBJECT *device, IRP *irp )
                 else status = STATUS_SUCCESS;
                 break;
             case BusQueryContainerID:
-                if (pdo->base.container_id[0])
-                {
-                    irp->IoStatus.Information = (ULONG_PTR)query_container_id(device);
-                    if (!irp->IoStatus.Information) status = STATUS_NO_MEMORY;
-                    else status = STATUS_SUCCESS;
-                }
+                irp->IoStatus.Information = 0;
+                status = STATUS_NOT_SUPPORTED;
                 break;
             default:
                 WARN("IRP_MN_QUERY_ID type %u, not implemented!\n", type);
@@ -558,6 +490,8 @@ static NTSTATUS pdo_pnp( DEVICE_OBJECT *device, IRP *irp )
             DEVICE_CAPABILITIES *caps = irpsp->Parameters.DeviceCapabilities.Capabilities;
 
             caps->RawDeviceOK = 1;
+            caps->UniqueID = 0;
+            caps->Removable = 0;
             status = STATUS_SUCCESS;
             break;
         }
@@ -666,6 +600,37 @@ static NTSTATUS WINAPI driver_close(DEVICE_OBJECT *device, IRP *irp)
     return pdo_close(device, irp);
 }
 
+static NTSTATUS WINAPI driver_query_volume(DEVICE_OBJECT *device, IRP *irp)
+{
+    IO_STACK_LOCATION *irpsp = IoGetCurrentIrpStackLocation( irp );
+    NTSTATUS status;
+
+    if (irpsp->Parameters.QueryVolume.FsInformationClass == FileFsDeviceInformation)
+    {
+        if (irpsp->Parameters.QueryVolume.Length < sizeof(FILE_FS_DEVICE_INFORMATION))
+        {
+            status = STATUS_BUFFER_TOO_SMALL;
+        }
+        else
+        {
+            FILE_FS_DEVICE_INFORMATION *info = irp->AssociatedIrp.SystemBuffer;
+            info->DeviceType = device->DeviceType;
+            info->Characteristics = device->Characteristics;
+            irp->IoStatus.Information = sizeof(*info);
+            status = STATUS_SUCCESS;
+        }
+    }
+    else
+    {
+        FIXME("unhandled volume info class %x\n", irpsp->Parameters.QueryVolume.FsInformationClass);
+        status = STATUS_NOT_IMPLEMENTED;
+    }
+
+    irp->IoStatus.Status = status;
+    IoCompleteRequest( irp, IO_NO_INCREMENT );
+    return status;
+}
+
 static NTSTATUS WINAPI driver_ioctl(DEVICE_OBJECT *device, IRP *irp)
 {
     return pdo_ioctl(device, irp);
@@ -715,6 +680,7 @@ NTSTATUS WINAPI HidRegisterMinidriver(HID_MINIDRIVER_REGISTRATION *registration)
     registration->DriverObject->MajorFunction[IRP_MJ_WRITE] = driver_write;
     registration->DriverObject->MajorFunction[IRP_MJ_CREATE] = driver_create;
     registration->DriverObject->MajorFunction[IRP_MJ_CLOSE] = driver_close;
+    registration->DriverObject->MajorFunction[IRP_MJ_QUERY_VOLUME_INFORMATION] = driver_query_volume;
 
     driver->PNPDispatch = registration->DriverObject->MajorFunction[IRP_MJ_PNP];
     registration->DriverObject->MajorFunction[IRP_MJ_PNP] = driver_pnp;

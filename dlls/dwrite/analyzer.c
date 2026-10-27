@@ -308,8 +308,24 @@ system_fallback_config[] =
     { "1C00-1C4F",              L"Noto Sans Lepcha" },
     { "1C50-1C7F",              L"Noto Sans Ol Chiki" },
 
+    /* Phonetic Extensions            - 1D00-1D7F
+       Phonetic Extensions Supplement - 1D80-1DBF
+       Latin Extended Additional      - 1E00-1EFF */
+    { "1D00-1D7F, 1D80-1DBF, "
+      "1E00-1EFF",              L"Noto Sans" },
+
+    /* Arrows - 2190-21FF */
+    { "2190-21FF",              L"Noto Sans Symbols" },
+
+    /* Miscellaneous Symbols - 2600-26FF */
+    { "2600-26FF",              L"Noto Sans Symbols2, Noto Sans Symbols 2, Noto Sans Symbols" },
+
     /* Dingbats - 2700-27BF */
     { "2700-27BF",              L"Noto Sans Symbols2, Noto Sans Symbols 2" },
+
+    /* Misc Symbols and Arrows - 2B00-2BFF
+       Supplemental Arrows-C   - 1F800-1F8FF */
+    { "2B00-2BFF, 1F800-1F8FF", L"Noto Sans Symbols2, Noto Sans Symbols 2" },
 
     { "2C80-2CFF",              L"Noto Sans Coptic" },
     { "2D30-2D7F",              L"Noto Sans Tifinagh" },
@@ -2553,14 +2569,13 @@ static HRESULT fallback_map_characters(const struct dwrite_fontfallback *fallbac
         if (SUCCEEDED(create_matching_font(mapping->collection ? mapping->collection : fallback->systemcollection,
                 mapping->families[i], weight, style, stretch, &IID_IDWriteFont3, (void **)&font)))
         {
-            if (!(mapped = fallback_font_get_supported_length(font, source, position, mapped)))
+            if (!(*ret_length = fallback_font_get_supported_length(font, source, position, mapped)))
             {
                 IDWriteFont3_Release(font);
                 continue;
             }
 
             *ret_font = (IDWriteFont *)font;
-            *ret_length = mapped;
             *scale = mapping->scale;
 
             return S_OK;

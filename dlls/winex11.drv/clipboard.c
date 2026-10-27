@@ -599,8 +599,8 @@ static CPTABLEINFO *get_ansi_cp(void)
     static CPTABLEINFO cp;
     if (!cp.CodePage)
     {
-        if (NtCurrentTeb()->Peb->AnsiCodePageData)
-            RtlInitCodePageTable( NtCurrentTeb()->Peb->AnsiCodePageData, &cp );
+        if (RtlGetCurrentPeb()->AnsiCodePageData)
+            RtlInitCodePageTable( RtlGetCurrentPeb()->AnsiCodePageData, &cp );
         else
             RtlInitCodePageTable( utf8_hdr, &cp );
     }
@@ -1921,6 +1921,7 @@ static void acquire_selection( Display *display )
 
     XSetSelectionOwner( display, x11drv_atom(CLIPBOARD), selection_window, CurrentTime );
     if (use_primary_selection) XSetSelectionOwner( display, XA_PRIMARY, selection_window, CurrentTime );
+    XFlush( display );
     TRACE( "win %lx\n", selection_window );
 }
 

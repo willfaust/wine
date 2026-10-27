@@ -55,7 +55,6 @@ struct debug_info
 
 C_ASSERT( sizeof(struct debug_info) == 0x800 );
 
-static BOOL init_done;
 static struct debug_info initial_info;  /* debug info for initial thread */
 static unsigned char default_flags = (1 << __WINE_DBCL_ERR) | (1 << __WINE_DBCL_FIXME);
 static int nb_debug_options = -1;
@@ -65,35 +64,9 @@ static struct __wine_debug_channel *debug_options;
 static const char * const debug_classes[] = { "fixme", "err", "warn", "trace" };
 
 /* get the debug info pointer for the current thread */
-static inline struct debug_info *get_info(void)
+static inline struct debug_info *get_info( struct thread_data *data )
 {
-    if (!init_done) return &initial_info;
-#ifdef WINE_IOS
-    /* iOS-Madeira ml379: a thread with NO TEB must not crash the logger.
-     *
-     * NtCurrentTeb() resolves through a pthread key on this port, and threads
-     * created outside wine (CEF/FEX worker threads, and any thread faulting
-     * before its TEB is registered) have no value for it. This function then
-     * computes NULL + teb_offset + sizeof(TEB32) = 0x3000 and
-     * __wine_dbg_header's `ldr w8,[x25,#4]` faults at 0x3004 — which raises
-     * another SIGSEGV at the SAME pc inside the handler that was reporting the
-     * first one, so it repeats until the debugger script kills the whole app.
-     *
-     * That single bug ate FOUR runs (ml370/374/375/376) and cost two wrong
-     * diagnoses, because the thread that does the logging is the thread that
-     * dies — the log just stops with no explanation. Fixing it at the source is
-     * what makes every ERR/WARN/TRACE in the port safe, rather than auditing
-     * call sites forever.
-     *
-     * initial_info is the same fallback used before init_done; concurrent use
-     * can interleave output, which is strictly better than a crash. */
-    if (!NtCurrentTeb()) return &initial_info;
-#endif
-#ifdef _WIN64
-    return (struct debug_info *)((TEB32 *)((char *)NtCurrentTeb() + teb_offset) + 1);
-#else
-    return (struct debug_info *)(NtCurrentTeb() + 1);
-#endif
+    return data ? (struct debug_info *)data->debug_info : &initial_info;
 }
 
 /* add a string to the output buffer */
@@ -234,6 +207,9 @@ static void init_options(void)
         default_flags = 0;
         return;
     }
+    setbuf( stdout, NULL );
+    setbuf( stderr, NULL );
+
     if (!wine_debug) return;
     if (!strcmp( wine_debug, "help" )) debug_usage();
 
@@ -282,7 +258,7 @@ unsigned char __cdecl __wine_dbg_get_channel_flags( struct __wine_debug_channel 
  */
 const char * __cdecl __wine_dbg_strdup( const char *str )
 {
-    struct debug_info *info = get_info();
+    struct debug_info *info = get_info( get_thread_data() );
     unsigned int pos = info->str_pos;
     size_t n = strlen( str ) + 1;
 
@@ -325,7 +301,7 @@ NTSTATUS wow64_wine_dbg_write( void *args )
  */
 int __cdecl __wine_dbg_output( const char *str )
 {
-    struct debug_info *info = get_info();
+    struct debug_info *info = get_info( get_thread_data() );
     const char *end = strrchr( str, '\n' );
     int ret = 0;
 
@@ -347,15 +323,20 @@ int __cdecl __wine_dbg_header( enum __wine_debug_class cls, struct __wine_debug_
                                const char *function )
 {
     static const char * const classes[] = { "fixme", "err", "warn", "trace" };
-    struct debug_info *info = get_info();
-    char *pos = info->output;
+    struct thread_data *data;
+    struct debug_info *info;
+    char *pos;
 
     if (!(__wine_dbg_get_channel_flags( channel ) & (1 << cls))) return -1;
+
+    data = get_thread_data();
+    info = get_info( data );
+    pos  = info->output;
 
     /* only print header if we are at the beginning of the line */
     if (info->out_pos) return 0;
 
-    if (init_done)
+    if (data)
     {
         if (TRACE_ON(timestamp))
         {
@@ -363,20 +344,12 @@ int __cdecl __wine_dbg_header( enum __wine_debug_class cls, struct __wine_debug_
             pos += snprintf( pos, sizeof(info->output) - (pos - info->output), "%3u.%03u:", ticks / 1000, ticks % 1000 );
         }
 #ifdef WINE_IOS
-        /* ml379: GetCurrentProcessId/ThreadId read NtCurrentTeb()->ClientId
-         * (TEB+0x40/+0x48). On a TEB-less thread those are the SECOND and THIRD
-         * NULL derefs in this function — guarding get_info() alone still left
-         * the logger crashing here (verified in the disassembly: two more
-         * `bl _NtCurrentTeb; ldr x8,[x0,#0x40]` sites). Print a marker instead
-         * so such lines are still attributable. */
-        if (!NtCurrentTeb())
-            pos += snprintf( pos, sizeof(info->output) - (pos - info->output), "no-teb:" );
-        else
+        if (TRACE_ON(pid)) pos += snprintf( pos, sizeof(info->output) - (pos - info->output), "%04x:",
+                                          HandleToULong( data->teb->ClientId.UniqueProcess ) );
+#else
+        if (TRACE_ON(pid)) pos += snprintf( pos, sizeof(info->output) - (pos - info->output), "%04x:", pid );
 #endif
-        {
-        if (TRACE_ON(pid)) pos += snprintf( pos, sizeof(info->output) - (pos - info->output), "%04x:", GetCurrentProcessId() );
-        pos += snprintf( pos, sizeof(info->output) - (pos - info->output), "%04x:", GetCurrentThreadId() );
-        }
+        if (data->tid) pos += snprintf( pos, sizeof(info->output) - (pos - info->output), "%04x:", data->tid );
     }
     if (function && cls < ARRAY_SIZE( classes ))
         pos += snprintf( pos, sizeof(info->output) - (pos - info->output), "%s:%s:%s ",
@@ -392,9 +365,6 @@ void dbg_init(void)
 {
     struct __wine_debug_channel *options, default_option = { default_flags };
 
-    setbuf( stdout, NULL );
-    setbuf( stderr, NULL );
-
     if (nb_debug_options == -1) init_options();
 
     options = (struct __wine_debug_channel *)((char *)peb + (is_win64 ? 2 : 1) * page_size);
@@ -402,7 +372,6 @@ void dbg_init(void)
     free( debug_options );
     debug_options = options;
     options[nb_debug_options] = default_option;
-    init_done = TRUE;
 }
 
 

@@ -18,6 +18,9 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
+#import "config.h"
+#import "macdrv.h"
+
 #import "cocoa_app.h"
 #import "cocoa_cursorclipping.h"
 #import "cocoa_event.h"
@@ -39,9 +42,6 @@ static NSString* const WineAppWillActivateNotification = @"WineAppWillActivateNo
 static NSString* const WineActivatingAppPIDKey = @"ActivatingAppPID";
 static NSString* const WineActivatingAppPrefixKey = @"ActivatingAppPrefix";
 static NSString* const WineActivatingAppConfigDirKey = @"ActivatingAppConfigDir";
-
-
-bool macdrv_err_on;
 
 
 #if !defined(MAC_OS_VERSION_14_0) || MAC_OS_X_VERSION_MAX_ALLOWED < MAC_OS_VERSION_14_0
@@ -217,6 +217,7 @@ static NSString* WineLocalizedString(unsigned int stringID)
             CFRunLoopSourceInvalidate(requestSource);
             CFRelease(requestSource);
         }
+        CGDisplayRemoveReconfigurationCallback(DisplayReconfigCallback, NULL);
         [super dealloc];
     }
 
@@ -404,7 +405,7 @@ static NSString* WineLocalizedString(unsigned int stringID)
             }
 
             triedWindows = (NSMutableSet*)event->window_got_focus.tried_windows;
-            [triedWindows addObject:(WineWindow*)event->window];
+            [triedWindows addObject:event->window];
             for (window in windows)
             {
                 if (![triedWindows containsObject:window] && [window canBecomeKeyWindow])
@@ -607,7 +608,7 @@ static NSString* WineLocalizedString(unsigned int stringID)
             }
         }
 
-        NSDisableScreenUpdates();
+        [NSAnimationContext beginGrouping];
 
         // Go from back to front so that all windows in front of one which is
         // elevated for full-screen are also elevated.
@@ -660,7 +661,7 @@ static NSString* WineLocalizedString(unsigned int stringID)
             prev = window;
         }];
 
-        NSEnableScreenUpdates();
+        [NSAnimationContext endGrouping];
 
         [wineWindows release];
 
@@ -2154,6 +2155,48 @@ static NSString* WineLocalizedString(unsigned int stringID)
     /*
      * ---------- NSApplicationDelegate methods ----------
      */
+    - (void)cgDisplay:(CGDirectDisplayID)display wasReconfiguredWithFlags:(CGDisplayChangeSummaryFlags)flags
+    {
+        NSDictionary *userInfo;
+
+        primaryScreenHeightValid = FALSE;
+        [self sendDisplaysChanged:FALSE];
+        [self adjustWindowLevels];
+
+        /* When the display configuration changes, the cursor position may jump.
+           Accumulated mouse movement deltas are invalidated.  Make sure the
+           next mouse move event starts over from an absolute baseline. */
+        forceNextMouseMoveAbsolute = TRUE;
+
+        userInfo = @{
+            WineDisplayConfigurationNotificationDisplayIDKey: @(display),
+            WineDisplayConfigurationNotificationFlagsKey: @(flags)
+        };
+        [NSNotificationCenter.defaultCenter postNotificationName:WineDisplayConfigurationChangedNotification
+                                                          object:NSApp
+                                                        userInfo:userInfo];
+    }
+
+    static void DisplayReconfigCallback(CGDirectDisplayID display, CGDisplayChangeSummaryFlags flags, void *userInfo)
+    {
+        /* A callback with flag == kCGDisplayBeginConfigurationFlag is
+           documented to be sent at the beginning of a change set. We should
+           ignore it; the actual changes will come in separate callbacks. */
+        if (flags == kCGDisplayBeginConfigurationFlag)
+            return;
+
+        /* We're called back on an internal CG thread, so kick this over to the
+           main thread. */
+        OnMainThreadAsync(^{
+            [WineApplicationController.sharedController cgDisplay:display wasReconfiguredWithFlags:flags];
+        });
+    }
+
+    - (void)applicationDidFinishLaunching:(NSNotification *)notification
+    {
+        CGDisplayRegisterReconfigurationCallback(DisplayReconfigCallback, NULL);
+    }
+
     - (void)applicationDidBecomeActive:(NSNotification *)notification
     {
         NSNumber* displayID;
@@ -2188,18 +2231,6 @@ static NSString* WineLocalizedString(unsigned int stringID)
         // The cursor probably moved while we were inactive.  Accumulated mouse
         // movement deltas are invalidated.  Make sure the next mouse move event
         // starts over from an absolute baseline.
-        forceNextMouseMoveAbsolute = TRUE;
-    }
-
-    - (void)applicationDidChangeScreenParameters:(NSNotification *)notification
-    {
-        primaryScreenHeightValid = FALSE;
-        [self sendDisplaysChanged:FALSE];
-        [self adjustWindowLevels];
-
-        // When the display configuration changes, the cursor position may jump.
-        // Accumulated mouse movement deltas are invalidated.  Make sure the next
-        // mouse move event starts over from an absolute baseline.
         forceNextMouseMoveAbsolute = TRUE;
     }
 
@@ -2353,30 +2384,6 @@ void OnMainThreadAsync(dispatch_block_t block)
 }
 
 @end
-
-/***********************************************************************
- *              LogError
- */
-void LogError(const char* func, NSString* format, ...)
-{
-    va_list args;
-    va_start(args, format);
-    LogErrorv(func, format, args);
-    va_end(args);
-}
-
-/***********************************************************************
- *              LogErrorv
- */
-void LogErrorv(const char* func, NSString* format, va_list args)
-{
-@autoreleasepool
-{
-    NSString* message = [[NSString alloc] initWithFormat:format arguments:args];
-    fprintf(stderr, "err:%s:%s", func, [message UTF8String]);
-    [message release];
-}
-}
 
 /***********************************************************************
  *              macdrv_window_rejected_focus
@@ -2623,14 +2630,12 @@ bool macdrv_using_input_method(void)
 /***********************************************************************
  *              macdrv_set_mouse_capture_window
  */
-void macdrv_set_mouse_capture_window(macdrv_window window)
+void macdrv_set_mouse_capture_window(WineWindow *window)
 {
-    WineWindow* w = (WineWindow*)window;
-
-    [w.queue discardEventsMatchingMask:event_mask_for_type(RELEASE_CAPTURE) forWindow:w];
+    [window.queue discardEventsMatchingMask:event_mask_for_type(RELEASE_CAPTURE) forWindow:window];
 
     OnMainThread(^{
-        [[WineApplicationController sharedController] setMouseCaptureWindow:w];
+        [[WineApplicationController sharedController] setMouseCaptureWindow:window];
     });
 }
 
@@ -2689,6 +2694,21 @@ bool macdrv_select_input_source(TISInputSourceRef input_source)
 
     OnMainThread(^{
         ret = (TISSelectInputSource(input_source) == noErr);
+    });
+
+    return ret;
+}
+
+bool macdrv_get_ime_open_status(TISInputSourceRef input_source)
+{
+    __block bool ret;
+
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        CFStringRef type = TISGetInputSourceProperty(input_source, kTISPropertyInputSourceType);
+        CFStringRef mode = TISGetInputSourceProperty(input_source, kTISPropertyInputModeID);
+
+        ret = !CFEqual(type, kTISTypeKeyboardLayout) &&
+              (!mode || !CFEqual(mode, CFSTR("com.apple.inputmethod.Roman")));
     });
 
     return ret;

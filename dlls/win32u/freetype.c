@@ -1919,18 +1919,18 @@ static BOOL select_charmap(FT_Face ft_face, FT_Encoding encoding)
                     break;
             }
         }
-
-        if (cmap3) /* prefer Microsoft cmap table */
-            ft_err = pFT_Set_Charmap(ft_face, cmap3);
-        else if (cmap1)
-            ft_err = pFT_Set_Charmap(ft_face, cmap1);
-        else if (cmap2)
-            ft_err = pFT_Set_Charmap(ft_face, cmap2);
-        else if (cmap0)
-            ft_err = pFT_Set_Charmap(ft_face, cmap0);
-        else if (cmap_def)
-            ft_err = pFT_Set_Charmap(ft_face, cmap_def);
     }
+
+    if (cmap3) /* prefer Microsoft cmap table */
+        ft_err = pFT_Set_Charmap(ft_face, cmap3);
+    else if (cmap1)
+        ft_err = pFT_Set_Charmap(ft_face, cmap1);
+    else if (cmap2)
+        ft_err = pFT_Set_Charmap(ft_face, cmap2);
+    else if (cmap0)
+        ft_err = pFT_Set_Charmap(ft_face, cmap0);
+    else if (cmap_def)
+        ft_err = pFT_Set_Charmap(ft_face, cmap_def);
 
     return ft_err == FT_Err_Ok;
 }
@@ -3149,6 +3149,14 @@ static UINT freetype_get_glyph_outline( struct gdi_font *font, UINT glyph, UINT 
         TEXTMETRICW *ptm = &base_font->otm.otmTextMetrics;
         INT top = min( metrics.horiBearingY, ptm->tmAscent << 6 );
         INT bottom = max( metrics.horiBearingY - metrics.height, -(ptm->tmDescent << 6) );
+
+        if (top < bottom)
+        {
+            INT t = top;
+            top = bottom;
+            bottom = t;
+        }
+
         metrics.horiBearingY = top;
         metrics.height = top - bottom;
 

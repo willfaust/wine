@@ -943,7 +943,7 @@ static void test_GetVolumePathNameA(void)
         if (ret)
         {
             ok(!strcmp( volume_path, test_paths[i].path_name )
-                    || broken(!strcasecmp( volume_path, test_paths[i].path_name )), /* XP */
+                    || broken(!stricmp( volume_path, test_paths[i].path_name )), /* XP */
                     "GetVolumePathName test %d unexpectedly returned path %s (expected %s).\n",
                     i, volume_path, test_paths[i].path_name);
         }
@@ -2019,6 +2019,8 @@ static void test_GetVolumeInformationByHandle(void)
     ret = pGetVolumeInformationByHandleW( file, label, ARRAY_SIZE(label), &serial,
             &filename_len, &flags, fsname, ARRAY_SIZE(fsname) );
     ok(ret, "got error %lu\n", GetLastError());
+    ok(flags & FILE_SUPPORTS_OPEN_BY_FILE_ID,
+            "expected FILE_SUPPORTS_OPEN_BY_FILE_ID to be set, got %#lx\n", flags);
 
     memset(buffer, 0, sizeof(buffer));
     status = NtQueryVolumeInformationFile( file, &io, buffer, sizeof(buffer), FileFsVolumeInformation );

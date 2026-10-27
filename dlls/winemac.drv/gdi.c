@@ -24,9 +24,7 @@
 #endif
 
 #include "config.h"
-
 #include "macdrv.h"
-#include "winreg.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(macdrv);
 
@@ -277,13 +275,14 @@ static const struct user_driver_funcs macdrv_funcs =
     .pUpdateClipboard = macdrv_UpdateClipboard,
     .pUpdateLayeredWindow = macdrv_UpdateLayeredWindow,
     .pVkKeyScanEx = macdrv_VkKeyScanEx,
-    .pImeProcessKey = macdrv_ImeProcessKey,
+    .pImeToAsciiEx = macdrv_ImeToAsciiEx,
     .pNotifyIMEStatus = macdrv_NotifyIMEStatus,
     .pSetIMECompositionRect = macdrv_SetIMECompositionRect,
     .pWindowMessage = macdrv_WindowMessage,
     .pWindowPosChanged = macdrv_WindowPosChanged,
     .pWindowPosChanging = macdrv_WindowPosChanging,
     .pGetWindowStyleMasks = macdrv_GetWindowStyleMasks,
+    .pCreateClientSurface = macdrv_CreateClientSurface,
     .pCreateWindowSurface = macdrv_CreateWindowSurface,
     .pVulkanInit = macdrv_VulkanInit,
     .pOpenGLInit = macdrv_OpenGLInit,

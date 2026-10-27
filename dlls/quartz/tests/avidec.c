@@ -1035,19 +1035,19 @@ static HRESULT WINAPI testsink_Receive(struct strmbase_sink *iface, IMediaSample
     else if (testmode == 1)
     {
         ok(hr == VFW_S_NO_STOP_TIME, "Got hr %#lx.\n", hr);
-        ok(start == 20000, "Got start time %s.\n", wine_dbgstr_longlong(start));
+        ok(start == 20000, "Got start time %I64d.\n", start);
     }
     else
     {
         ok(hr == S_OK, "Got hr %#lx.\n", hr);
-        ok(start == 20000, "Got start time %s.\n", wine_dbgstr_longlong(start));
-        ok(stop == 30000, "Got stop time %s.\n", wine_dbgstr_longlong(stop));
+        ok(start == 20000, "Got start time %I64d.\n", start);
+        ok(stop == 30000, "Got stop time %I64d.\n", stop);
     }
 
     hr = IMediaSample_GetMediaTime(sample, &start, &stop);
     ok(hr == VFW_E_MEDIA_TIME_NOT_SET, "Got hr %#lx.\n", hr);
     hr = IMediaSample_IsDiscontinuity(sample);
-    todo_wine_if (testmode == 5) ok(hr == (testmode == 4) ? S_OK : S_FALSE, "Got hr %#lx.\n", hr);
+    todo_wine_if (testmode == 5) ok(hr == ((testmode == 4) ? S_OK : S_FALSE), "Got hr %#lx.\n", hr);
     hr = IMediaSample_IsPreroll(sample);
     todo_wine_if (testmode == 3) ok(hr == S_FALSE, "Got hr %#lx.\n", hr);
     hr = IMediaSample_IsSyncPoint(sample);
@@ -1074,8 +1074,8 @@ static HRESULT testsink_new_segment(struct strmbase_sink *iface,
 {
     struct testfilter *filter = impl_from_strmbase_filter(iface->pin.filter);
     ++filter->got_new_segment;
-    ok(start == 10000, "Got start %s.\n", wine_dbgstr_longlong(start));
-    ok(stop == 20000, "Got stop %s.\n", wine_dbgstr_longlong(stop));
+    ok(start == 10000, "Got start %I64d.\n", start);
+    ok(stop == 20000, "Got stop %I64d.\n", stop);
     ok(rate == 1.0, "Got rate %.16e.\n", rate);
     return S_OK;
 }

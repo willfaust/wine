@@ -83,41 +83,19 @@ static void semaphore_sync_destroy( struct object *obj );
 
 static const struct object_ops semaphore_sync_ops =
 {
-    sizeof(struct semaphore_sync), /* size */
-    &no_type,                      /* type */
-    semaphore_sync_dump,           /* dump */
+    .size         = sizeof(struct semaphore_sync),
+    .type         = &no_type,
+    .dump         = semaphore_sync_dump,
 #ifdef WINE_IOS
-    /* ml1010: exactly as for an event -- these maintain cell->srv_waiters,
-     * which is the flag a client-side release reads to decide whether the
-     * server still has to be told to re-run its own wait queue.  The increment
-     * is visible before the server evaluates the count, because wait_on() adds
-     * every queue entry and only then does check_wait() call signaled(). */
-    semaphore_sync_add_queue,      /* add_queue */
-    semaphore_sync_remove_queue,   /* remove_queue */
+    .add_queue    = semaphore_sync_add_queue,
+    .remove_queue = semaphore_sync_remove_queue,
+    .destroy      = semaphore_sync_destroy,
 #else
-    add_queue,                     /* add_queue */
-    remove_queue,                  /* remove_queue */
+    .add_queue    = add_queue,
+    .remove_queue = remove_queue,
 #endif
-    semaphore_sync_signaled,       /* signaled */
-    semaphore_sync_satisfied,      /* satisfied */
-    no_signal,                     /* signal */
-    no_get_fd,                     /* get_fd */
-    default_get_sync,              /* get_sync */
-    default_map_access,            /* map_access */
-    default_get_sd,                /* get_sd */
-    default_set_sd,                /* set_sd */
-    default_get_full_name,         /* get_full_name */
-    no_lookup_name,                /* lookup_name */
-    directory_link_name,           /* link_name */
-    default_unlink_name,           /* unlink_name */
-    no_open_file,                  /* open_file */
-    no_kernel_obj_list,            /* get_kernel_obj_list */
-    no_close_handle,               /* close_handle */
-#ifdef WINE_IOS
-    semaphore_sync_destroy         /* destroy */
-#else
-    no_destroy                     /* destroy */
-#endif
+    .signaled     = semaphore_sync_signaled,
+    .satisfied    = semaphore_sync_satisfied,
 };
 
 #ifdef WINE_IOS
@@ -478,69 +456,42 @@ struct semaphore
     struct object         *sync;   /* semaphore sync object */
 };
 
+struct semaphore_init_data
+{
+    unsigned int initial;
+    unsigned int max;
+};
+
 static void semaphore_dump( struct object *obj, int verbose );
+static bool semaphore_init( struct object *obj, const void *init_data );
 static struct object *semaphore_get_sync( struct object *obj );
 static int semaphore_signal( struct object *obj, unsigned int access, int signal );
 static void semaphore_destroy( struct object *obj );
 
 static const struct object_ops semaphore_ops =
 {
-    sizeof(struct semaphore),      /* size */
-    &semaphore_type,               /* type */
-    semaphore_dump,                /* dump */
-    NULL,                          /* add_queue */
-    NULL,                          /* remove_queue */
-    NULL,                          /* signaled */
-    NULL,                          /* satisfied */
-    semaphore_signal,              /* signal */
-    no_get_fd,                     /* get_fd */
-    semaphore_get_sync,            /* get_sync */
-    default_map_access,            /* map_access */
-    default_get_sd,                /* get_sd */
-    default_set_sd,                /* set_sd */
-    default_get_full_name,         /* get_full_name */
-    no_lookup_name,                /* lookup_name */
-    directory_link_name,           /* link_name */
-    default_unlink_name,           /* unlink_name */
-    no_open_file,                  /* open_file */
-    no_kernel_obj_list,            /* get_kernel_obj_list */
-    no_close_handle,               /* close_handle */
-    semaphore_destroy,             /* destroy */
+    .size     = sizeof(struct semaphore),
+    .type     = &semaphore_type,
+    .dump     = semaphore_dump,
+    .init     = semaphore_init,
+    .signal   = semaphore_signal,
+    .get_sync = semaphore_get_sync,
+    .destroy  = semaphore_destroy,
 };
-
-static struct semaphore *create_semaphore( struct object *root, const struct unicode_str *name,
-                                           unsigned int attr, unsigned int initial, unsigned int max,
-                                           const struct security_descriptor *sd )
-{
-    struct semaphore *sem;
-
-    if (!max || (initial > max))
-    {
-        set_error( STATUS_INVALID_PARAMETER );
-        return NULL;
-    }
-    if ((sem = create_named_object( root, &semaphore_ops, name, attr, sd )))
-    {
-        if (get_error() != STATUS_OBJECT_NAME_EXISTS)
-        {
-            /* initialize it if it didn't already exist */
-            sem->sync = NULL;
-
-            if (!(sem->sync = create_semaphore_sync( initial, max )))
-            {
-                release_object( sem );
-                return NULL;
-            }
-        }
-    }
-    return sem;
-}
 
 static void semaphore_dump( struct object *obj, int verbose )
 {
     struct semaphore *sem = (struct semaphore *)obj;
     assert( obj->ops == &semaphore_ops );
     sem->sync->ops->dump( sem->sync, verbose );
+}
+
+static bool semaphore_init( struct object *obj, const void *init_data )
+{
+    struct semaphore *sem = (struct semaphore *)obj;
+    const struct semaphore_init_data *data = init_data;
+
+    return !!(sem->sync = create_semaphore_sync( data->initial, data->max ));
 }
 
 static struct object *semaphore_get_sync( struct object *obj )
@@ -610,34 +561,25 @@ int madeira_semaphore_disable_cell( struct object *obj )
 /* create a semaphore */
 DECL_HANDLER(create_semaphore)
 {
-    struct semaphore *sem;
-    struct unicode_str name;
-    struct object *root;
-    const struct security_descriptor *sd;
-    const struct object_attributes *objattr = get_req_object_attributes( &sd, &name, &root );
+    struct semaphore_init_data data = { .initial = req->initial, .max = req->max };
+    struct object_params params = { .ops = &semaphore_ops, .access = req->access, .init_data = &data };
 
-    if (!objattr) return;
-
-    if ((sem = create_semaphore( root, &name, objattr->attributes, req->initial, req->max, sd )))
+    if (!req->max || (req->initial > req->max))
     {
-        if (get_error() == STATUS_OBJECT_NAME_EXISTS)
-            reply->handle = alloc_handle( current->process, sem, req->access, objattr->attributes );
-        else
-            reply->handle = alloc_handle_no_access_check( current->process, sem,
-                                                          req->access, objattr->attributes );
-        release_object( sem );
+        set_error( STATUS_INVALID_PARAMETER );
+        return;
     }
 
-    if (root) release_object( root );
+    if (!get_req_object_attributes( &params )) return;
+    reply->handle = create_named_obj_handle( current->process, &params );
+    if (params.root) release_object( params.root );
 }
 
 /* open a handle to a semaphore */
 DECL_HANDLER(open_semaphore)
 {
-    struct unicode_str name = get_req_unicode_str();
-
     reply->handle = open_object( current->process, req->rootdir, req->access,
-                                 &semaphore_ops, &name, req->attributes );
+                                 &semaphore_ops, get_req_unicode_str(), req->attributes );
 }
 
 /* release a semaphore */

@@ -79,7 +79,6 @@ static BOOL   (WINAPI *pSetInformationJobObject)(HANDLE job, JOBOBJECTINFOCLASS 
 static HANDLE (WINAPI *pCreateIoCompletionPort)(HANDLE file, HANDLE existing_port, ULONG_PTR key, DWORD threads);
 static BOOL   (WINAPI *pGetNumaProcessorNode)(UCHAR, PUCHAR);
 static NTSTATUS (WINAPI *pNtQueryInformationProcess)(HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG);
-static NTSTATUS (WINAPI *pNtQueryInformationThread)(HANDLE, THREADINFOCLASS, PVOID, ULONG, PULONG);
 static NTSTATUS (WINAPI *pNtQuerySystemInformationEx)(SYSTEM_INFORMATION_CLASS, void*, ULONG, void*, ULONG, ULONG*);
 static DWORD  (WINAPI *pWTSGetActiveConsoleSessionId)(void);
 static HANDLE (WINAPI *pCreateToolhelp32Snapshot)(DWORD, DWORD);
@@ -88,7 +87,6 @@ static BOOL   (WINAPI *pProcess32Next)(HANDLE, PROCESSENTRY32*);
 static BOOL   (WINAPI *pThread32First)(HANDLE, THREADENTRY32*);
 static BOOL   (WINAPI *pThread32Next)(HANDLE, THREADENTRY32*);
 static BOOL   (WINAPI *pGetLogicalProcessorInformationEx)(LOGICAL_PROCESSOR_RELATIONSHIP,SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*,DWORD*);
-static SIZE_T (WINAPI *pGetLargePageMinimum)(void);
 static BOOL   (WINAPI *pGetSystemCpuSetInformation)(SYSTEM_CPU_SET_INFORMATION*,ULONG,ULONG*,HANDLE,ULONG);
 static BOOL   (WINAPI *pInitializeProcThreadAttributeList)(struct _PROC_THREAD_ATTRIBUTE_LIST*, DWORD, DWORD, SIZE_T*);
 static BOOL   (WINAPI *pUpdateProcThreadAttribute)(struct _PROC_THREAD_ATTRIBUTE_LIST*, DWORD, DWORD_PTR, void *,SIZE_T,void*,SIZE_T*);
@@ -98,6 +96,10 @@ static DWORD  (WINAPI *pGetMaximumProcessorCount)(WORD);
 static BOOL   (WINAPI *pGetProcessInformation)(HANDLE,PROCESS_INFORMATION_CLASS,void*,DWORD);
 static void (WINAPI *pClosePseudoConsole)(HPCON);
 static HRESULT (WINAPI *pCreatePseudoConsole)(COORD,HANDLE,HANDLE,DWORD,HPCON*);
+
+#if defined(__x86_64__) || defined(__i386__)
+static NTSTATUS (WINAPI *pNtQueryInformationThread)(HANDLE, THREADINFOCLASS, PVOID, ULONG, PULONG);
+#endif
 
 /* ############################### */
 static char     base[MAX_PATH];
@@ -244,8 +246,10 @@ static BOOL init(void)
     hntdll    = GetModuleHandleA("ntdll.dll");
 
     pNtQueryInformationProcess = (void *)GetProcAddress(hntdll, "NtQueryInformationProcess");
-    pNtQueryInformationThread = (void *)GetProcAddress(hntdll, "NtQueryInformationThread");
     pNtQuerySystemInformationEx = (void *)GetProcAddress(hntdll, "NtQuerySystemInformationEx");
+#if defined(__x86_64__) || defined(__i386__)
+    pNtQueryInformationThread = (void *)GetProcAddress(hntdll, "NtQueryInformationThread");
+#endif
 
     pGetNativeSystemInfo = (void *) GetProcAddress(hkernel32, "GetNativeSystemInfo");
     pGetSystemRegistryQuota = (void *) GetProcAddress(hkernel32, "GetSystemRegistryQuota");
@@ -270,7 +274,6 @@ static BOOL init(void)
     pThread32First = (void *)GetProcAddress(hkernel32, "Thread32First");
     pThread32Next = (void *)GetProcAddress(hkernel32, "Thread32Next");
     pGetLogicalProcessorInformationEx = (void *)GetProcAddress(hkernel32, "GetLogicalProcessorInformationEx");
-    pGetLargePageMinimum = (void *)GetProcAddress(hkernel32, "GetLargePageMinimum");
     pGetSystemCpuSetInformation = (void *)GetProcAddress(hkernel32, "GetSystemCpuSetInformation");
     pInitializeProcThreadAttributeList = (void *)GetProcAddress(hkernel32, "InitializeProcThreadAttributeList");
     pUpdateProcThreadAttribute = (void *)GetProcAddress(hkernel32, "UpdateProcThreadAttribute");
@@ -601,7 +604,7 @@ static int strCmp(const char* s1, const char* s2, BOOL sensitive)
     if (!s1 && !s2) return 0;
     if (!s2) return -1;
     if (!s1) return 1;
-    return (sensitive) ? strcmp(s1, s2) : strcasecmp(s1, s2);
+    return (sensitive) ? strcmp(s1, s2) : stricmp(s1, s2);
 }
 
 static void ok_child_string( int line, const char *sect, const char *key,
@@ -4496,19 +4499,6 @@ static void test_GetSystemCpuSetInformation(void)
     free(info);
 }
 
-static void test_largepages(void)
-{
-    SIZE_T size;
-
-    if (!pGetLargePageMinimum) {
-        win_skip("No GetLargePageMinimum support.\n");
-        return;
-    }
-    size = pGetLargePageMinimum();
-
-    ok((size == 0) || (size == 2*1024*1024) || (size == 4*1024*1024), "GetLargePageMinimum reports %Id size\n", size);
-}
-
 struct proc_thread_attr
 {
     DWORD_PTR attr;
@@ -5699,7 +5689,7 @@ static void test_GetProcessInformation(void)
     ok(ret, "Unexpected return value %d.\n", ret);
 
     process = GetCurrentProcess();
-    status = NtQuerySystemInformationEx( SystemSupportedProcessorArchitectures, &process, sizeof(process),
+    status = NtQuerySystemInformationEx( SystemSupportedProcessorArchitectures2, &process, sizeof(process),
             machines, sizeof(machines), NULL );
     ok(!status, "Failed to get architectures information.\n");
     for (i = 0; machines[i].Machine; i++)
@@ -5840,7 +5830,6 @@ START_TEST(process)
     test_session_info();
     test_GetLogicalProcessorInformationEx();
     test_GetSystemCpuSetInformation();
-    test_largepages();
     test_ProcThreadAttributeList();
     test_SuspendProcessState();
     test_SuspendProcessNewThread();

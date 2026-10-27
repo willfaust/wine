@@ -3046,12 +3046,12 @@ static void update_codepage( UINT screen_dpi )
         font_dpi = *(DWORD *)info->Data;
 
     RtlInitCodePageTable( utf8_hdr, &utf8_cp );
-    if (NtCurrentTeb()->Peb->AnsiCodePageData)
-        RtlInitCodePageTable( NtCurrentTeb()->Peb->AnsiCodePageData, &ansi_cp );
+    if (RtlGetCurrentPeb()->AnsiCodePageData)
+        RtlInitCodePageTable( RtlGetCurrentPeb()->AnsiCodePageData, &ansi_cp );
     else
         ansi_cp = utf8_cp;
-    if (NtCurrentTeb()->Peb->OemCodePageData)
-        RtlInitCodePageTable( NtCurrentTeb()->Peb->OemCodePageData, &oem_cp );
+    if (RtlGetCurrentPeb()->OemCodePageData)
+        RtlInitCodePageTable( RtlGetCurrentPeb()->OemCodePageData, &oem_cp );
     else
         oem_cp = utf8_cp;
     snprintf( cpbuf, sizeof(cpbuf), "%u,%u", ansi_cp.CodePage, oem_cp.CodePage );
@@ -3589,7 +3589,8 @@ const NLS_LOCALE_DATA *get_locale_data( LCID lcid )
         else if (lcid > lcids_index[pos].id) min = pos + 1;
         else
         {
-            ULONG offset = locale_table->locales_offset + pos * locale_table->locale_size;
+            const NLS_LOCALE_LCID_INDEX *entry = &lcids_index[pos];
+            ULONG offset = locale_table->locales_offset + entry->idx * locale_table->locale_size;
             return (const NLS_LOCALE_DATA *)((const char *)locale_table + offset);
         }
     }

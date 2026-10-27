@@ -413,11 +413,29 @@ static HRESULT WINAPI transform_sink_receive(struct strmbase_sink *pin, IMediaSa
     return S_OK;
 }
 
+static HRESULT transform_sink_begin_flush(struct strmbase_sink *pin)
+{
+    struct transform *filter = impl_from_strmbase_filter(pin->pin.filter);
+    HRESULT hr;
+
+    TRACE("(%p)\n", pin);
+
+    hr = wg_transform_flush(filter->transform);
+
+    wg_sample_queue_flush(filter->sample_queue, true);
+
+    if (filter->source.pin.peer)
+        IPin_BeginFlush(filter->source.pin.peer);
+
+    return hr;
+}
+
 static const struct strmbase_sink_ops sink_ops =
 {
     .base.pin_query_accept = transform_sink_query_accept,
     .base.pin_query_interface = transform_sink_query_interface,
     .pfnReceive = transform_sink_receive,
+    .sink_begin_flush = transform_sink_begin_flush,
 };
 
 static HRESULT transform_source_query_accept(struct strmbase_pin *pin, const AM_MEDIA_TYPE *mt)
@@ -865,7 +883,7 @@ static HRESULT mpeg_video_codec_source_get_media_type(struct transform *filter, 
         WG_VIDEO_FORMAT_RGB15,
     };
 
-    const MPEG1VIDEOINFO *input_format = (MPEG1VIDEOINFO*)filter->sink.pin.mt.pbFormat;
+    const MPEG1VIDEOINFO *input_format;
     struct wg_format wg_format = {};
     VIDEOINFO *video_format;
 

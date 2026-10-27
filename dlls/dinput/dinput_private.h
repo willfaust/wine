@@ -62,6 +62,8 @@ extern HRESULT hid_joystick_create_device( struct dinput *dinput, const GUID *gu
 extern HRESULT ios_joystick_enum_device( DWORD type, DWORD flags, DIDEVICEINSTANCEW *instance, DWORD version, int index );
 extern HRESULT ios_joystick_create_device( struct dinput *dinput, const GUID *guid, IDirectInputDevice8W **out );
 extern const GUID ios_joystick_guid;
+extern HRESULT hid_joystick_refresh_devices(void);
+extern void hid_joystick_cleanup_devices(void);
 
 struct DevicePlayer {
     GUID instance_guid;

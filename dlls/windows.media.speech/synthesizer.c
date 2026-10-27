@@ -115,7 +115,7 @@ static HRESULT WINAPI voice_information_get_DisplayName( IVoiceInformation *ifac
 {
     struct voice_information *impl = impl_from_IVoiceInformation(iface);
 
-    TRACE("iface %p, value %p!n", iface, value);
+    TRACE("iface %p, value %p\n", iface, value);
     return WindowsDuplicateString(impl->display_name, value);
 }
 
@@ -180,14 +180,22 @@ static HRESULT voice_information_create( const WCHAR *display_name, const WCHAR 
 
     if (!(voice_info = calloc(1, sizeof(*voice_info)))) return E_OUTOFMEMORY;
 
-    len = wcslen(display_name) + 3;
-    langlen = GetLocaleInfoEx(locale, LOCALE_SLOCALIZEDDISPLAYNAME, NULL, 0);
-    description = malloc((len + langlen)  * sizeof(WCHAR));
-    wcscpy(description, display_name);
-    wcscat(description, L" - ");
-    GetLocaleInfoEx(locale, LOCALE_SLOCALIZEDDISPLAYNAME, description + len, langlen);
+    hr = S_OK;
 
-    hr = WindowsCreateString(display_name, wcslen(display_name), &voice_info->display_name);
+    len = wcslen(display_name) + wcslen(L" - ");
+    langlen = GetLocaleInfoEx(locale, LOCALE_SLOCALIZEDDISPLAYNAME, NULL, 0);
+
+    if (!(description = malloc((len + langlen) * sizeof(WCHAR))))
+        hr = E_OUTOFMEMORY;
+    else
+    {
+        wcscpy(description, display_name);
+        wcscat(description, L" - ");
+        GetLocaleInfoEx(locale, LOCALE_SLOCALIZEDDISPLAYNAME, description + len, langlen);
+    }
+
+    if (SUCCEEDED(hr))
+        hr = WindowsCreateString(display_name, wcslen(display_name), &voice_info->display_name);
     if (SUCCEEDED(hr))
         hr = WindowsCreateString(id, wcslen(id), &voice_info->id);
     if (SUCCEEDED(hr))
@@ -304,7 +312,7 @@ static ULONG WINAPI vector_view_voice_information_Release( IVectorView_VoiceInfo
         for (i = 0; i < impl->provider.num_voices; ++i)
         {
             IVoiceInformation_Release(impl->provider.voices[i]);
-            impl->provider.voices[i] = 0;
+            impl->provider.voices[i] = NULL;
         }
         impl->provider.num_voices = 0;
     }
@@ -1472,19 +1480,27 @@ static HRESULT WINAPI synthesizer_SynthesizeSsmlToStreamAsync( ISpeechSynthesize
 static HRESULT WINAPI synthesizer_put_Voice( ISpeechSynthesizer *iface, IVoiceInformation *value )
 {
     struct synthesizer *impl = impl_from_ISpeechSynthesizer(iface);
+    IVectorView_VoiceInformation *all_voices_vector;
+    IInstalledVoicesStatic *installed_voices;
     IVoiceInformation *voice;
-    HSTRING id, id2;
+    HSTRING id = NULL, id2;
     HRESULT hr;
     INT32 cmp, idx;
 
     TRACE("iface %p, value %p semi-stub.\n", iface, value);
 
-    if (FAILED(hr = IVoiceInformation_get_Id(value, &id)))
-        return hr;
+    if (SUCCEEDED(hr = IActivationFactory_QueryInterface(synthesizer_factory, &IID_IInstalledVoicesStatic, (void **)&installed_voices)))
+    {
+        hr = IInstalledVoicesStatic_get_AllVoices(installed_voices, &all_voices_vector);
+        IInstalledVoicesStatic_Release(installed_voices);
+    }
+    if (FAILED(hr)) return hr;
+
+    hr = IVoiceInformation_get_Id(value, &id);
 
     for (idx = 0; ; idx++)
     {
-        if (SUCCEEDED(hr = IVectorView_VoiceInformation_GetAt(&all_voices.IVectorView_VoiceInformation_iface, idx, &voice)))
+        if (SUCCEEDED(hr = IVectorView_VoiceInformation_GetAt(all_voices_vector, idx, &voice)))
         {
             if (SUCCEEDED(hr = IVoiceInformation_get_Id(voice, &id2)))
             {
@@ -1496,6 +1512,7 @@ static HRESULT WINAPI synthesizer_put_Voice( ISpeechSynthesizer *iface, IVoiceIn
         if (FAILED(hr) || cmp == 0) break;
     }
     WindowsDeleteString(id);
+    IVectorView_VoiceInformation_Release(all_voices_vector);
 
     if (SUCCEEDED(hr))
     {
@@ -1745,8 +1762,8 @@ static HRESULT static_installed_voices_init(void)
     if (all_voices.provider.num_voices)
         return S_OK;
 
-    if (GetUserDefaultLocaleName(locale, ARRAY_SIZE(locale)) > ARRAY_SIZE(locale))
-        return E_OUTOFMEMORY;
+    if (!GetUserDefaultLocaleName(locale, ARRAY_SIZE(locale)))
+        return HRESULT_FROM_WIN32(GetLastError());
 
     if (!(all_voices.provider.voices = calloc(1, sizeof(all_voices.provider.voices[0]))))
         return E_OUTOFMEMORY;
@@ -1801,12 +1818,16 @@ static HRESULT WINAPI installed_voices_static_get_DefaultVoice( IInstalledVoices
 
     EnterCriticalSection(&allvoices_cs);
 
+    if (FAILED(hr = static_installed_voices_init()))
+        goto end;
+
     if (SUCCEEDED(hr = IVectorView_VoiceInformation_GetAt(&all_voices.IVectorView_VoiceInformation_iface, 0, &static_voice)))
     {
         hr = voice_information_clone(static_voice, value);
         IVoiceInformation_Release(static_voice);
     }
 
+end:
     LeaveCriticalSection(&allvoices_cs);
 
     return hr;

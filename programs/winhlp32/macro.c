@@ -671,7 +671,21 @@ static void CALLBACK MACRO_NoShow(void)
 
 void CALLBACK MACRO_PopupContext(LPCSTR str, LONG u)
 {
-    WINE_FIXME("(%s, %lu)\n", debugstr_a(str), u);
+    HLPFILE_WINDOWINFO* wi;
+    HLPFILE *hlpfile;
+    POINT origin = { 0, 0 };
+
+    WINE_TRACE("(%s, %lu)\n", debugstr_a(str), u);
+
+    if (!(hlpfile = WINHELP_LookupHelpFile(str)))
+    {
+        WINE_ERR("Failed to load .hlp file for %s\n", debugstr_a(str));
+        return;
+    }
+
+    GetCursorPos(&origin);
+    wi = WINHELP_GetPopupWindowInfo(hlpfile, MACRO_CurrentWindow(), MAKELPARAM(origin.x, origin.y));
+    WINHELP_OpenHelpWindow(HLPFILE_PageByMap, hlpfile, u, wi, SW_NORMAL);
 }
 
 static void CALLBACK MACRO_PopupHash(LPCSTR str, LONG u)
@@ -1000,7 +1014,7 @@ static int MACRO_DoLookUp(struct MacroDesc* start, const char* name, struct lexr
 
     for (md = start; md->name && len != 0; md++, len--)
     {
-        if (strcasecmp(md->name, name) == 0 || (md->alias != NULL && strcasecmp(md->alias, name) == 0))
+        if (stricmp(md->name, name) == 0 || (md->alias != NULL && stricmp(md->alias, name) == 0))
         {
             lr->proto = md->arguments;
             lr->function = md->fn;

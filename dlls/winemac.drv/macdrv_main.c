@@ -25,14 +25,10 @@
 #endif
 
 #include "config.h"
+#include "macdrv.h"
 
 #include <Security/AuthSession.h>
 #include <IOKit/pwr_mgt/IOPMLib.h>
-
-#include "ntstatus.h"
-#include "macdrv.h"
-#include "shellapi.h"
-#include "wine/server.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(macdrv);
 
@@ -43,13 +39,13 @@ C_ASSERT(NUM_EVENT_TYPES <= sizeof(macdrv_event_mask) * 8);
 
 int topmost_float_inactive = TOPMOST_FLOAT_INACTIVE_NONFULLSCREEN;
 bool capture_displays_for_fullscreen = false;
-BOOL allow_vsync = TRUE;
-BOOL allow_set_gamma = TRUE;
+bool allow_vsync = true;
+bool allow_set_gamma = true;
 bool left_option_is_alt = false;
 bool right_option_is_alt = false;
 bool left_command_is_ctrl = false;
 bool right_command_is_ctrl = false;
-BOOL allow_software_rendering = FALSE;
+bool allow_software_rendering = false;
 bool allow_immovable_windows = true;
 bool use_confinement_cursor_clipping = true;
 bool cursor_clipping_locks_windows = true;
@@ -58,6 +54,7 @@ int gl_surface_mode = GL_SURFACE_IN_FRONT_OPAQUE;
 bool retina_enabled = false;
 bool enable_app_nap = false;
 
+pthread_key_t macdrv_thread_data_key = 0;
 UINT64 app_icon_callback = 0;
 UINT64 app_quit_request_callback = 0;
 
@@ -75,25 +72,18 @@ const char* debugstr_cf(CFTypeRef t)
     if (!t) return "(null)";
 
     if (CFGetTypeID(t) == CFStringGetTypeID())
-        s = t;
+        s = CFStringCreateWithFormat(NULL, NULL, CFSTR("\"%@\""), t);
     else
         s = CFCopyDescription(t);
     ret = CFStringGetCStringPtr(s, kCFStringEncodingUTF8);
-    if (ret) ret = debugstr_a(ret);
+    if (ret) ret = __wine_dbg_strdup(ret);
     if (!ret)
     {
-        const UniChar* u = CFStringGetCharactersPtr(s);
-        if (u)
-            ret = debugstr_wn((const WCHAR*)u, CFStringGetLength(s));
+        char buf[300];
+        CFStringGetCString(s, buf, sizeof(buf), kCFStringEncodingUTF8);
+        ret = __wine_dbg_strdup(buf);
     }
-    if (!ret)
-    {
-        UniChar buf[200];
-        int len = min(CFStringGetLength(s), ARRAY_SIZE(buf));
-        CFStringGetCharacters(s, CFRangeMake(0, len), buf);
-        ret = debugstr_wn(buf, len);
-    }
-    if (s != t) CFRelease(s);
+    CFRelease(s);
     return ret;
 }
 
@@ -205,15 +195,15 @@ HKEY reg_create_ascii_key(HKEY root, const char *name, DWORD options, DWORD *dis
 }
 
 
-BOOL reg_delete_tree(HKEY parent, const WCHAR *name, ULONG name_len)
+bool reg_delete_tree(HKEY parent, const WCHAR *name, ULONG name_len)
 {
     char buffer[4096];
     KEY_NODE_INFORMATION *key_info = (KEY_NODE_INFORMATION *)buffer;
     DWORD size;
     HKEY key;
-    BOOL ret = TRUE;
+    bool ret = true;
 
-    if (!(key = reg_open_key(parent, name, name_len))) return FALSE;
+    if (!(key = reg_open_key(parent, name, name_len))) return false;
 
     while (ret && !NtEnumerateKey(key, 0, KeyNodeInformation, key_info, sizeof(buffer), &size))
         ret = reg_delete_tree(key, key_info->Name, key_info->NameLength);
@@ -287,7 +277,7 @@ static void setup_options(void)
 
     /* open the app-specific key */
 
-    appname = NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer;
+    appname = RtlGetCurrentPeb()->ProcessParameters->ImagePathName.Buffer;
     if ((p = wcsrchr(appname, '/'))) appname = p + 1;
     if ((p = wcsrchr(appname, '\\'))) appname = p + 1;
     len = lstrlenW(appname);
@@ -435,11 +425,12 @@ static NTSTATUS macdrv_init(void *arg)
     if (status != noErr || !(attributes & sessionHasGraphicAccess))
         return STATUS_UNSUCCESSFUL;
 
+    pthread_key_create( &macdrv_thread_data_key, NULL );
+
     init_win_context();
     setup_options();
     load_strings(params->strings);
 
-    macdrv_err_on = ERR_ON(macdrv);
     if (macdrv_start_cocoa_app(NtGetTickCount()))
     {
         ERR("Failed to start Cocoa app main loop\n");
@@ -465,7 +456,7 @@ void macdrv_ThreadDetach(void)
             CFRelease(data->keyboard_layout_uchr);
         free(data);
         /* clear data in case we get re-entered from user32 before the thread is truly dead */
-        NtUserGetThreadInfo()->driver_data = 0;
+        pthread_setspecific( macdrv_thread_data_key, NULL );
     }
 }
 
@@ -524,11 +515,12 @@ struct macdrv_thread_data *macdrv_init_thread_data(void)
 
     macdrv_get_input_source_info(&data->keyboard_layout_uchr, &data->keyboard_type, &data->iso_keyboard, &input_source);
     data->active_keyboard_layout = macdrv_get_hkl_from_source(input_source);
+    data->ime_open = macdrv_get_ime_open_status(input_source);
     CFRelease(input_source);
     macdrv_compute_keyboard_layout(data);
 
     set_queue_display_fd(macdrv_get_event_queue_fd(data->queue));
-    NtUserGetThreadInfo()->driver_data = (UINT_PTR)data;
+    pthread_setspecific( macdrv_thread_data_key, data );
 
     NtUserActivateKeyboardLayout(data->active_keyboard_layout, 0);
     return data;

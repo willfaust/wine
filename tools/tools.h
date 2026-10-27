@@ -97,9 +97,11 @@ extern char **environ;
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 #endif
 
+enum target_cpu { CPU_i386, CPU_x86_64, CPU_ARM, CPU_ARM64, CPU_ARM64EC };
+
 struct target
 {
-    enum { CPU_i386, CPU_x86_64, CPU_ARM, CPU_ARM64, CPU_ARM64EC } cpu;
+    enum target_cpu cpu;
 
     enum
     {
@@ -110,8 +112,8 @@ struct target
         PLATFORM_FREEBSD,
         PLATFORM_SOLARIS,
         PLATFORM_WINDOWS,
+        PLATFORM_WINDOWS_GNU,
         PLATFORM_MINGW,
-        PLATFORM_CYGWIN
     } platform;
 };
 
@@ -425,19 +427,21 @@ static inline char *make_temp_dir( const char *tmpdir )
     int count;
     char *name;
 
+    if (!tmpdir)
+    {
+#ifdef _WIN32
+       tmpdir = getenv("TEMP");
+#else
+       if (!(tmpdir = getenv("TMPDIR"))) tmpdir = "/tmp";
+#endif
+    }
+
     for (count = 0; count < 0x8000; count++)
     {
-        if (tmpdir)
-            name = strmake( "%s/tmp%08x", tmpdir, value );
-        else
-            name = strmake( "tmp%08x", value );
+        name = strmake( "%s/tmp%08x", tmpdir, value );
         if (!mkdir( name, 0700 )) return name;
         value += 7777;
-        if (errno == EACCES && !tmpdir)
-        {
-            if (!(tmpdir = getenv("TMPDIR"))) tmpdir = "/tmp";
-        }
-        else if (errno != EEXIST) fatal_perror( "cannot create directory in %s", tmpdir ? tmpdir : "." );
+        if (errno != EEXIST) fatal_perror( "cannot create directory in %s", tmpdir );
         free( name );
     }
     fprintf( stderr, "failed to create directory for temp files\n" );
@@ -571,7 +575,7 @@ static inline struct target get_default_target(void)
 #elif defined(__sun)
     target.platform = PLATFORM_SOLARIS;
 #elif defined(__CYGWIN__)
-    target.platform = PLATFORM_CYGWIN;
+    target.platform = PLATFORM_MINGW;
 #elif defined(_WIN32)
     target.platform = PLATFORM_MINGW;
 #else
@@ -617,11 +621,16 @@ static inline void set_target_ptr_size( struct target *target, unsigned int size
 }
 
 
+static inline bool is_llvm_pe_target( struct target target )
+{
+    return target.platform == PLATFORM_WINDOWS ||
+           target.platform == PLATFORM_WINDOWS_GNU;
+}
+
+
 static inline bool is_pe_target( struct target target )
 {
-    return (target.platform == PLATFORM_WINDOWS ||
-            target.platform == PLATFORM_MINGW ||
-            target.platform == PLATFORM_CYGWIN);
+    return (is_llvm_pe_target( target ) || target.platform == PLATFORM_MINGW);
 }
 
 
@@ -629,8 +638,8 @@ static inline int get_cpu_from_name( const char *name )
 {
     static const struct
     {
-        const char *name;
-        int         cpu;
+        const char     *name;
+        enum target_cpu cpu;
     } cpu_names[] =
     {
         { "i386",      CPU_i386 },
@@ -668,10 +677,10 @@ static inline int get_platform_from_name( const char *name )
         { "freebsd",     PLATFORM_FREEBSD },
         { "solaris",     PLATFORM_SOLARIS },
         { "mingw32",     PLATFORM_MINGW },
-        { "windows-gnu", PLATFORM_MINGW },
+        { "windows-gnu", PLATFORM_WINDOWS_GNU },
         { "winnt",       PLATFORM_MINGW },
         { "windows",     PLATFORM_WINDOWS },
-        { "cygwin",      PLATFORM_CYGWIN },
+        { "cygwin",      PLATFORM_MINGW },
     };
     unsigned int i;
 
@@ -682,7 +691,7 @@ static inline int get_platform_from_name( const char *name )
 };
 
 
-static inline const char *get_arch_dir( struct target target )
+static inline const char *get_cpu_name( enum target_cpu cpu )
 {
     static const char *cpu_names[] =
     {
@@ -690,11 +699,15 @@ static inline const char *get_arch_dir( struct target target )
         [CPU_x86_64]  = "x86_64",
         [CPU_ARM]     = "arm",
         [CPU_ARM64]   = "aarch64",
-        [CPU_ARM64EC] = "aarch64",
+        [CPU_ARM64EC] = "arm64ec",
     };
+    return cpu_names[cpu];
+}
 
-    if (!cpu_names[target.cpu]) return "";
-    return strmake( "/%s-%s", cpu_names[target.cpu], is_pe_target( target ) ? "windows" : "unix" );
+static inline const char *get_arch_dir( struct target target )
+{
+    const char *cpu_name = get_cpu_name( target.cpu == CPU_ARM64EC ? CPU_ARM64 : target.cpu );
+    return strmake( "/%s-%s", cpu_name, is_pe_target( target ) ? "windows" : "unix" );
 }
 
 static inline bool parse_target( const char *name, struct target *target )
