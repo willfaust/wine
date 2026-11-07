@@ -1400,6 +1400,48 @@ static HWND set_window_owner( HWND hwnd, HWND owner )
 }
 
 /* Helper function for SetWindowLong(). */
+/* madeira-duo (6 Nov 2026): a top-level window that loses its frame while at least as
+ * large as the monitor is snapped to the monitor.
+ *
+ * PoE2's borderless fullscreen creates a framed window of its saved size plus the frame,
+ * then removes the frame with SWP_NOSIZE. The frameless window is all client, the game
+ * saves that client size, and the next launch adds the frame again: 1440x900 grew 8x34 a
+ * launch to 1504x1156 on the 1440x900 desktop, which then showed shrunk with black bars.
+ * On Windows the framed window never got past the monitor-sized track limit.
+ * Opt-in: MADEIRA_SNAP_BORDERLESS=1 turns it on. */
+static void madeira_snap_borderless_window( HWND hwnd, DWORD old_style, DWORD new_style )
+{
+    static int enabled = -1;
+    const DWORD frame_styles = WS_CAPTION | WS_THICKFRAME;
+    RECT window_rect, monitor_rect;
+    UINT dpi = get_thread_dpi();
+    int window_width, window_height, monitor_width, monitor_height;
+
+    if (enabled < 0)
+    {
+        const char *env = getenv( "MADEIRA_SNAP_BORDERLESS" );
+        enabled = env && env[0] == '1' && !env[1];
+    }
+    if (!enabled) return;
+    if (new_style & WS_CHILD) return;
+    if (!(old_style & frame_styles) || (new_style & frame_styles)) return;   /* not a frame removal */
+    if (NtUserGetAncestor( hwnd, GA_PARENT ) != get_desktop_window()) return;
+    if (!get_window_rect( hwnd, &window_rect, dpi )) return;
+
+    monitor_rect = get_primary_monitor_rect( dpi );
+    window_width = window_rect.right - window_rect.left;
+    window_height = window_rect.bottom - window_rect.top;
+    monitor_width = monitor_rect.right - monitor_rect.left;
+    monitor_height = monitor_rect.bottom - monitor_rect.top;
+    if (window_width < monitor_width || window_height < monitor_height) return;
+    if (window_width == monitor_width && window_height == monitor_height) return;
+
+    TRACE( "snapping borderless %p from %s to monitor %s\n", hwnd,
+           wine_dbgstr_rect( &window_rect ), wine_dbgstr_rect( &monitor_rect ));
+    NtUserSetWindowPos( hwnd, 0, monitor_rect.left, monitor_rect.top, monitor_width, monitor_height,
+                        SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER );
+}
+
 LONG_PTR set_window_long( HWND hwnd, INT offset, UINT size, LONG_PTR newval, BOOL ansi )
 {
     BOOL ok, made_visible = FALSE, layered = FALSE;
@@ -1577,6 +1619,7 @@ LONG_PTR set_window_long( HWND hwnd, INT offset, UINT size, LONG_PTR newval, BOO
         user_driver->pSetWindowStyle( hwnd, offset, &style );
         if (made_visible || layered) update_window_state( hwnd );
         send_message( hwnd, WM_STYLECHANGED, offset, (LPARAM)&style );
+        if (offset == GWL_STYLE) madeira_snap_borderless_window( hwnd, style.styleOld, style.styleNew );
     }
 
     return retval;
