@@ -1342,6 +1342,30 @@ void ios_eager_delay_resolve( const char *when )
 #include "arm64ec_x64_export_iat.c"
 #include "cs_x64_fastpath.c"   /* MADEIRA_CS_X64 / MADEIRA_TLS_X64 */
 
+/* madeira-duo: an EC importer's IAT value for a forwarded export. kernel32's
+ * EnterCriticalSection is NTDLL.RtlEnterCriticalSection, so the name resolves to
+ * ntdll's x64 export thunk, but import_dll redirected it with kernel32's
+ * redirection table, which has no entry for an ntdll address; the fallback then
+ * decodes the thunk's bytes. MADEIRA_CS_X64 rewrites ntdll's critical-section
+ * thunks to `jmp [rip]` to x64 stubs, so every ARM64EC module that imports
+ * Enter/LeaveCriticalSection from kernel32 bound to those stubs and called them
+ * through its exit thunk (dxc4/text3 logs, 4 Nov: ~5,000 round trips a second
+ * from madeira_d3d12 alone). Redirect with the table of the module the address
+ * is in, as a direct import of that module would be; the importer's own table
+ * stays the fallback. The loader_section is held here. */
+static void *arm64ec_redirect_import( HMODULE imp_mod, void *ptr, const IMAGE_ARM64EC_METADATA *imp_metadata )
+{
+    LDR_DATA_TABLE_ENTRY *owner;
+
+    if (ptr && !LdrFindEntryForAddress( ptr, &owner ) && owner->DllBase != imp_mod)
+    {
+        const IMAGE_ARM64EC_METADATA *owner_metadata = arm64ec_get_module_metadata( owner->DllBase );
+
+        if (owner_metadata) return arm64ec_redirect_ptr( owner->DllBase, ptr, owner_metadata );
+    }
+    return arm64ec_redirect_ptr( imp_mod, ptr, imp_metadata );
+}
+
 static BOOL arm64ec_iat_is_exported_x64( HMODULE module, const IMAGE_THUNK_DATA *slot )
 {
     const IMAGE_ARM64EC_METADATA *metadata = arm64ec_get_module_metadata( module );
@@ -1500,9 +1524,9 @@ static BOOL import_dll( WINE_MODREF *wm, const IMAGE_IMPORT_DESCRIPTOR *descr, L
             }
 #ifdef __arm64ec__
             else if (imp_metadata && !arm64ec_iat_is_exported_x64( module, thunk_list ))
-                thunk_list->u1.Function = (ULONG_PTR)arm64ec_redirect_ptr( imp_mod,
-                                                                           (void *)thunk_list->u1.Function,
-                                                                           imp_metadata );
+                thunk_list->u1.Function = (ULONG_PTR)arm64ec_redirect_import( imp_mod,
+                                                                              (void *)thunk_list->u1.Function,
+                                                                              imp_metadata );
 #endif
             TRACE_(imports)("--- Ordinal %s.%d = %p\n", name, ordinal, (void *)thunk_list->u1.Function );
         }
@@ -1526,9 +1550,9 @@ static BOOL import_dll( WINE_MODREF *wm, const IMAGE_IMPORT_DESCRIPTOR *descr, L
             {
                 void *pre = (void *)thunk_list->u1.Function;
 
-                thunk_list->u1.Function = (ULONG_PTR)arm64ec_redirect_ptr( imp_mod,
-                                                                           (void *)thunk_list->u1.Function,
-                                                                           imp_metadata );
+                thunk_list->u1.Function = (ULONG_PTR)arm64ec_redirect_import( imp_mod,
+                                                                              (void *)thunk_list->u1.Function,
+                                                                              imp_metadata );
                 /* iOS-Madeira ml230: does the EC->EC import bind actually land on native
                  * code, and is that code MARKED EC?
                  *
