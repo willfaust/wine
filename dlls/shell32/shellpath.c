@@ -2921,6 +2921,24 @@ cleanup:
     return hr;
 }
 
+/* Madeira: PoE2 asks for Local AppData ~100x a second, and every answer is a chain of
+ * registry opens and reads (ProfileList, User Shell Folders, Shell Folders) through the
+ * wineserver. A shell folder's base path doesn't change during a session unless shell32
+ * itself redirects or re-registers it, so keep the expanded base path per (folder, flags)
+ * for the calling user (hToken NULL). The subpath, existence check and create still run
+ * every call. */
+static SRWLOCK madeira_folder_lock = SRWLOCK_INIT;
+static BYTE madeira_folder_valid[2][ARRAY_SIZE(CSIDL_Data)];
+static WCHAR madeira_folder_path[2][ARRAY_SIZE(CSIDL_Data)][MAX_PATH];
+static LONG madeira_folder_hits;
+
+static void madeira_folder_cache_clear(void)
+{
+    AcquireSRWLockExclusive(&madeira_folder_lock);
+    memset(madeira_folder_valid, 0, sizeof(madeira_folder_valid));
+    ReleaseSRWLockExclusive(&madeira_folder_lock);
+}
+
 /*************************************************************************
  * SHGetFolderPathAndSubDirW		[SHELL32.@]
  */
@@ -2937,6 +2955,7 @@ HRESULT WINAPI SHGetFolderPathAndSubDirW(
     DWORD      folder = nFolder & CSIDL_FOLDER_MASK;
     CSIDL_Type type;
     int        ret;
+    BOOL       cacheable, cached = FALSE;
 
     TRACE("%p,%#x,%p,%#lx,%s,%p\n", hwndOwner, nFolder, hToken, dwFlags, debugstr_w(pszSubPath), pszPath);
 
@@ -2952,6 +2971,26 @@ HRESULT WINAPI SHGetFolderPathAndSubDirW(
         return E_INVALIDARG;
     szTemp[0] = 0;
     type = CSIDL_Data[folder].type;
+    cacheable = !hToken && (type == CSIDL_Type_User || type == CSIDL_Type_AllUsers ||
+                            type == CSIDL_Type_ProgramData || type == CSIDL_Type_CurrVer);
+    if (cacheable)
+    {
+        AcquireSRWLockShared(&madeira_folder_lock);
+        if (madeira_folder_valid[dwFlags][folder])
+        {
+            lstrcpyW(szBuildPath, madeira_folder_path[dwFlags][folder]);
+            cached = TRUE;
+        }
+        ReleaseSRWLockShared(&madeira_folder_lock);
+    }
+    if (cached)
+    {
+        LONG n = InterlockedIncrement(&madeira_folder_hits);
+        if (n == 1 || !(n & 16383))
+            ERR("[folder-cache] #%ld csidl %#lx flags %lu served from cache: %s\n", n, folder, dwFlags, debugstr_w(szBuildPath));
+        hr = S_OK;
+        goto have_path;
+    }
     switch (type)
     {
         case CSIDL_Type_Disallowed:
@@ -2998,6 +3037,16 @@ HRESULT WINAPI SHGetFolderPathAndSubDirW(
         lstrcpyW(szBuildPath, szTemp);
 
     if (FAILED(hr)) goto end;
+
+    if (cacheable && hr == S_OK && szBuildPath[0])
+    {
+        AcquireSRWLockExclusive(&madeira_folder_lock);
+        lstrcpyW(madeira_folder_path[dwFlags][folder], szBuildPath);
+        madeira_folder_valid[dwFlags][folder] = 1;
+        ReleaseSRWLockExclusive(&madeira_folder_lock);
+    }
+
+have_path:
 
     if(pszSubPath) {
         /* make sure the new path does not exceed the buffer length
@@ -3098,6 +3147,7 @@ static HRESULT _SHRegisterFolders(HKEY hRootKey, HANDLE hToken,
     TRACE("%p,%p,%s,%p,%u\n", hRootKey, hToken,
      debugstr_w(szUserShellFolderPath), folders, foldersLen);
 
+    madeira_folder_cache_clear();
     ret = RegCreateKeyW(hRootKey, szUserShellFolderPath, &hUserKey);
     if (ret)
         hr = HRESULT_FROM_WIN32(ret);
@@ -3768,6 +3818,8 @@ static HRESULT redirect_known_folder(
     /* get path to redirection storage */
     if(SUCCEEDED(hr))
         hr = get_known_folder_redirection_place(rfid, &rootKey);
+
+    madeira_folder_cache_clear();
 
     /* write redirection information */
     if(SUCCEEDED(hr))
