@@ -1287,6 +1287,12 @@ struct futex_queue
 {
     struct list queue;
     LONG lock;
+    /* Madeira wake fast path: number of entries currently queued in this
+     * bucket.  It lives in the 4 bytes of padding after `lock`, so the struct
+     * stays 24 bytes and keeps matching the unix side's shared table
+     * (struct ios_shared_futex_queue, dlls/ntdll/unix/sync.c). Every ntdll
+     * copy that queues waiters on the shared table must maintain it. */
+    LONG waiters;
 };
 
 static struct futex_queue futex_queues[256];
@@ -1396,10 +1402,16 @@ NTSTATUS WINAPI RtlWaitOnAddress( const void *addr, const void *cmp, SIZE_T size
 
     spin_lock( &queue->lock );
 
+    /* Announce the waiter before comparing.  Paired with the barrier in
+     * futex_queue_has_waiters(): either this compare sees the waker's new
+     * value, or the waker sees waiters != 0 and takes the locked path. */
+    InterlockedIncrement( &queue->waiters );
+
     /* Do the comparison inside of the spinlock, to reduce spurious wakeups. */
 
     if (!compare_addr( addr, cmp, size ))
     {
+        InterlockedDecrement( &queue->waiters );
         spin_unlock( &queue->lock );
         return STATUS_SUCCESS;
     }
@@ -1443,7 +1455,10 @@ NTSTATUS WINAPI RtlWaitOnAddress( const void *addr, const void *cmp, SIZE_T size
     {
         spin_lock( &queue->lock );
         if (entry.addr)
+        {
             list_remove( &entry.entry );
+            InterlockedDecrement( &queue->waiters );
+        }
         spin_unlock( &queue->lock );
     }
 
@@ -1451,6 +1466,18 @@ NTSTATUS WINAPI RtlWaitOnAddress( const void *addr, const void *cmp, SIZE_T size
 
     if (ret == STATUS_ALERTED) ret = STATUS_SUCCESS;
     return ret;
+}
+
+/* Madeira wake fast path.  Games release SRW locks and signal condition
+ * variables far more often than anyone waits on them (Path of Exile 2: about
+ * a million RtlWakeAddress* calls a second against a few thousand waits), and
+ * every one of those wakes took this bucket's spinlock: a shared cache line
+ * bounced between all the game's threads for nothing.  A wake with no queued
+ * waiter in the bucket now returns after one full barrier and one load. */
+static inline BOOL futex_queue_has_waiters( struct futex_queue *queue )
+{
+    MemoryBarrier();  /* order the caller's store to *addr before the load below */
+    return ReadNoFence( &queue->waiters ) != 0;
 }
 
 /***********************************************************************
@@ -1468,6 +1495,7 @@ void WINAPI RtlWakeAddressAll( const void *addr )
     TRACE("%p\n", addr);
 
     if (!addr) return;
+    if (!futex_queue_has_waiters( queue )) return;
 
     spin_lock( &queue->lock );
 
@@ -1480,6 +1508,7 @@ void WINAPI RtlWakeAddressAll( const void *addr )
         {
             entry->addr = NULL;
             list_remove( &entry->entry );
+            InterlockedDecrement( &queue->waiters );
             if (count == ARRAY_SIZE(tids))
             {
                 NtAlertMultipleThreadByThreadId( tids, count, NULL, NULL );
@@ -1511,6 +1540,7 @@ void WINAPI RtlWakeAddressSingle( const void *addr )
     TRACE("%p\n", addr);
 
     if (!addr) return;
+    if (!futex_queue_has_waiters( queue )) return;
 
     spin_lock( &queue->lock );
 
@@ -1530,6 +1560,7 @@ void WINAPI RtlWakeAddressSingle( const void *addr )
              * calls must wake at least two waiters if they exist. */
             entry->addr = NULL;
             list_remove( &entry->entry );
+            InterlockedDecrement( &queue->waiters );
             break;
         }
     }
