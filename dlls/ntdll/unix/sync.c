@@ -58,6 +58,7 @@
 #ifdef __APPLE__
 # include <mach/mach_time.h>
 # include <mach/mach.h>
+# include <mach/thread_switch.h>   /* madeira-duo: NtYieldExecution without depression */
 # include <mach/mach_vm.h>
 #endif
 #ifdef HAVE_KQUEUE
@@ -3599,6 +3600,30 @@ NTSTATUS WINAPI NtYieldExecution(void)
         {
             __sync_fetch_and_add( &ios_xp_yield_slept, 1 );
             usleep( (useconds_t)ios_ysleep );
+            return STATUS_SUCCESS;
+        }
+    }
+#endif
+#ifdef WINE_IOS
+    /* madeira-duo (6 Nov 2026): no priority depression. Darwin's sched_yield is
+     * swtch_pri(0), which drops the thread to priority 0 for up to one quantum
+     * (10 ms) whenever anything else is runnable (xnu syscall_subr.c,
+     * thread_depress_abstime; Apple's tech talk 110147 says the same). PoE2's Main
+     * spent 26 % of its CPU yielding in prof9's capped stretch, with 16-22 threads
+     * runnable, so each yield put the frame's own thread behind utility work.
+     * thread_switch with SWITCH_OPTION_NONE gives up the core without it.
+     * Opt-in: madeira.cfg yield-depress = 0 (the default 1 keeps sched_yield). */
+    {
+        static int ios_ydepress = -1;
+        if (ios_ydepress < 0)
+        {
+            ios_ydepress = madeira_cfg_int( "yield-depress", 1 ) ? 1 : 0;
+            if (!ios_ydepress)
+                fprintf( stderr, "[sync-census] yield-depress = 0: NtYieldExecution gives up the core with thread_switch, without priority depression\n" );
+        }
+        if (!ios_ydepress)
+        {
+            thread_switch( MACH_PORT_NULL, SWITCH_OPTION_NONE, 0 );
             return STATUS_SUCCESS;
         }
     }
