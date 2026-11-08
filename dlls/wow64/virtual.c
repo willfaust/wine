@@ -125,6 +125,7 @@ static NTSTATUS mem_extended_parameters_32to64( MEM_EXTENDED_PARAMETER **ret_par
         if (req32->HighestEndingAddress > highest_user_address) return STATUS_INVALID_PARAMETER;
         req->LowestStartingAddress = ULongToPtr( req32->LowestStartingAddress );
         req->HighestEndingAddress  = ULongToPtr( req32->HighestEndingAddress );
+        if (!req->HighestEndingAddress && set_limit) req->HighestEndingAddress = (void *)highest_user_address;
         req->Alignment             = req32->Alignment;
     }
     else if (set_limit)
