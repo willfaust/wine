@@ -3615,13 +3615,19 @@ NTSTATUS WINAPI NtYieldExecution(void)
      * Opt-in: madeira.cfg yield-depress = 0 (the default 1 keeps sched_yield). */
     {
         static int ios_ydepress = -1;
-        if (ios_ydepress < 0)
+        int value = __atomic_load_n( &ios_ydepress, __ATOMIC_ACQUIRE );
+        if (value < 0)
         {
-            ios_ydepress = madeira_cfg_int( "yield-depress", 1 ) ? 1 : 0;
-            if (!ios_ydepress)
-                fprintf( stderr, "[sync-census] yield-depress = 0: NtYieldExecution gives up the core with thread_switch, without priority depression\n" );
+            int expected = -1;
+            value = madeira_cfg_int( "yield-depress", 1 ) ? 1 : 0;
+            if (__atomic_compare_exchange_n( &ios_ydepress, &expected, value, 0, __ATOMIC_RELEASE, __ATOMIC_ACQUIRE ))
+            {
+                if (!value)
+                    fprintf( stderr, "[sync-census] yield-depress = 0: NtYieldExecution gives up the core with thread_switch, without priority depression\n" );
+            }
+            else value = expected;
         }
-        if (!ios_ydepress)
+        if (!value)
         {
             thread_switch( MACH_PORT_NULL, SWITCH_OPTION_NONE, 0 );
             return STATUS_SUCCESS;
