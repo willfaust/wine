@@ -1738,7 +1738,12 @@ static HRESULT build_directshowfilters_tree(IDxDiagContainerImpl_Container *node
     hr = CoCreateInstance(&CLSID_SystemDeviceEnum, NULL, CLSCTX_INPROC_SERVER,
                           &IID_ICreateDevEnum, (void **)&pCreateDevEnum);
     if (FAILED(hr))
-        return hr;
+    {
+        /* Madeira: devenum.dll is not in the 64-bit set; like the other sections, this one stays
+         * empty without its component instead of failing Initialize. */
+        ERR("[dxdiagn] no DirectShow device enumerator (%#lx); the DirectShow filters section stays empty\n", hr);
+        return S_OK;
+    }
 
     hr = ICreateDevEnum_CreateClassEnumerator(pCreateDevEnum, &CLSID_ActiveMovieCategories, &pEmCat, 0);
     if (hr != S_OK)
@@ -1843,6 +1848,11 @@ static HRESULT build_directshowfilters_tree(IDxDiagContainerImpl_Container *node
 cleanup:
     if (pEmCat) IEnumMoniker_Release(pEmCat);
     ICreateDevEnum_Release(pCreateDevEnum);
+    if (FAILED(hr))
+    {
+        ERR("[dxdiagn] DirectShow filter enumeration failed (%#lx); the section keeps what it found\n", hr);
+        return S_OK;
+    }
     return hr;
 }
 

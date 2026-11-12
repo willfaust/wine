@@ -1375,6 +1375,41 @@ static BOOL compare_addr( const void *addr, const void *cmp, SIZE_T size )
     return FALSE;
 }
 
+#ifdef __i386__
+/* Madeira woa-recheck: an infinite wait on an address waits in one-second slices
+ * (MADEIRA_WOA_SLICE, which the unix side recognises: unless env.MADEIRA_WOA_RECHECK is 1 it waits the infinite wait the
+ * slice stands for). After each slice the waiter looks at its own entry under the queue's spinlock: removed by a waker
+ * whose alert never came ends the wait with STATUS_SUCCESS (a spurious wake-up, which every caller handles); otherwise it
+ * waits again. */
+#define MADEIRA_WOA_SLICE (-10000001)
+static NTSTATUS madeira_woa_wait( struct futex_queue *queue, struct futex_entry *entry, const void *addr, SIZE_T size )
+{
+    static LONG logged;
+    LARGE_INTEGER slice;
+    unsigned int seconds = 0;
+    BOOL dequeued;
+    NTSTATUS ret;
+
+    slice.QuadPart = MADEIRA_WOA_SLICE;
+    for (;;)
+    {
+        ret = NtWaitForAlertByThreadId( addr, &slice );
+        if (ret != STATUS_TIMEOUT) return ret;
+        seconds++;
+        spin_lock( &queue->lock );
+        dequeued = !entry->addr;
+        spin_unlock( &queue->lock );
+        if (dequeued)
+        {
+            if (InterlockedIncrement( &logged ) <= 32)
+                ERR( "[woa-rescue] tid=%04lx addr=%p size=%Iu after %u s: dequeued, no alert within the slice\n",
+                     (unsigned long)GetCurrentThreadId(), addr, size, seconds );
+            return STATUS_SUCCESS;
+        }
+    }
+}
+#endif
+
 /***********************************************************************
  *           RtlWaitOnAddress   (NTDLL.@)
  */
@@ -1428,6 +1463,10 @@ NTSTATUS WINAPI RtlWaitOnAddress( const void *addr, const void *cmp, SIZE_T size
     /* ml441: pass the real address — the unix layer ignores it functionally
      * but the [waiters] registry (ml440) records it, so long parks are now
      * attributable to a named lock word. */
+#ifdef __i386__
+    if (!timeout) ret = madeira_woa_wait( queue, &entry, addr, size );   /* woa-recheck */
+    else
+#endif
     ret = NtWaitForAlertByThreadId( addr, timeout );
 
     if (NtCurrentTeb()->Instrumentation[10] == (void *)(ULONG_PTR)0x504d5550)
