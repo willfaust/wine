@@ -1905,12 +1905,21 @@ static HRESULT session_append_node(struct media_session *session, IMFTopologyNod
                         if (FAILED(hr = IMFVideoSampleAllocator_InitializeSampleAllocator(topo_node->u.sink.allocator,
                                 2, media_type)))
                         {
-                            WARN("Failed to initialize sample allocator for the stream, hr %#lx.\n", hr);
+                            /* Keep the node and give the upstream node system memory samples instead.
+                             * Failing here dropped this node and every node after it, and the session
+                             * then started without ever requesting a sample. */
+                            ERR("Failed to initialize sample allocator for the stream, hr %#lx.\n", hr);
+                            IMFVideoSampleAllocator_Release(topo_node->u.sink.allocator);
+                            topo_node->u.sink.allocator = NULL;
+                            hr = S_OK;
                         }
-                        IMFVideoSampleAllocator_QueryInterface(topo_node->u.sink.allocator,
-                                &IID_IMFVideoSampleAllocatorCallback, (void **)&topo_node->u.sink.allocator_cb);
-                        IMFVideoSampleAllocatorCallback_SetCallback(topo_node->u.sink.allocator_cb,
-                                &topo_node->u.sink.notify_cb);
+                        else
+                        {
+                            IMFVideoSampleAllocator_QueryInterface(topo_node->u.sink.allocator,
+                                    &IID_IMFVideoSampleAllocatorCallback, (void **)&topo_node->u.sink.allocator_cb);
+                            IMFVideoSampleAllocatorCallback_SetCallback(topo_node->u.sink.allocator_cb,
+                                    &topo_node->u.sink.notify_cb);
+                        }
                     }
                     IMFMediaType_Release(media_type);
                 }

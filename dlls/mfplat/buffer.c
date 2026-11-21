@@ -832,6 +832,41 @@ static HRESULT WINAPI d3d9_surface_buffer_Lock2DSize(IMF2DBuffer2 *iface, MF2DBu
     return hr;
 }
 
+/* The whole image is overwritten, so the surface is locked with D3DLOCK_DISCARD: a plain lock
+ * reads the surface back first, which waits for the GPU (once per frame the sample copier
+ * delivers to the EVR). A buffer that is already locked takes the generic path. */
+static HRESULT WINAPI d3d9_surface_buffer_ContiguousCopyFrom(IMF2DBuffer2 *iface, const BYTE *src_buffer,
+        DWORD src_length)
+{
+    struct buffer *buffer = impl_from_IMF2DBuffer2(iface);
+    D3DLOCKED_RECT rect;
+    HRESULT hr;
+
+    TRACE("%p, %p, %lu.\n", iface, src_buffer, src_length);
+
+    if (src_length < buffer->_2d.plane_size)
+        return E_INVALIDARG;
+
+    EnterCriticalSection(&buffer->cs);
+
+    if (buffer->_2d.linear_buffer || buffer->_2d.locks)
+    {
+        LeaveCriticalSection(&buffer->cs);
+        return memory_2d_buffer_ContiguousCopyFrom(iface, src_buffer, src_length);
+    }
+
+    if (SUCCEEDED(hr = IDirect3DSurface9_LockRect(buffer->d3d9_surface.surface, &rect, NULL, D3DLOCK_DISCARD)))
+    {
+        copy_image(buffer, rect.pBits, rect.Pitch, src_buffer, buffer->_2d.width,
+                buffer->_2d.width, buffer->_2d.height);
+        IDirect3DSurface9_UnlockRect(buffer->d3d9_surface.surface);
+    }
+
+    LeaveCriticalSection(&buffer->cs);
+
+    return hr;
+}
+
 static const IMF2DBuffer2Vtbl d3d9_surface_buffer_vtbl =
 {
     memory_2d_buffer_QueryInterface,
@@ -843,7 +878,7 @@ static const IMF2DBuffer2Vtbl d3d9_surface_buffer_vtbl =
     memory_2d_buffer_IsContiguousFormat,
     memory_2d_buffer_GetContiguousLength,
     memory_2d_buffer_ContiguousCopyTo,
-    memory_2d_buffer_ContiguousCopyFrom,
+    d3d9_surface_buffer_ContiguousCopyFrom,
     d3d9_surface_buffer_Lock2DSize,
     memory_2d_buffer_Copy2DTo,
 };

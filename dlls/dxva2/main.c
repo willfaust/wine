@@ -302,6 +302,7 @@ static HRESULT WINAPI video_processor_VideoProcessBlt(IDirectXVideoProcessor *if
     IDirect3DDevice9 *device;
     unsigned int i;
     RECT dst_rect;
+    BOOL scaled;
     HRESULT hr;
 
     TRACE("%p, %p, %p, %p, %u, %p.\n", iface, rt, params, samples, sample_count, complete_handle);
@@ -327,8 +328,11 @@ static HRESULT WINAPI video_processor_VideoProcessBlt(IDirectXVideoProcessor *if
         if (!intersect_rect(&dst_rect, &dst_rect, &samples[i].DstRect))
             continue;
 
+        /* A scaled picture is filtered, as a video processor does; a 1:1 copy stays exact. */
+        scaled = samples[i].SrcRect.right - samples[i].SrcRect.left != dst_rect.right - dst_rect.left
+                || samples[i].SrcRect.bottom - samples[i].SrcRect.top != dst_rect.bottom - dst_rect.top;
         if (FAILED(hr = IDirect3DDevice9_StretchRect(device, samples[i].SrcSurface, &samples[i].SrcRect,
-                rt, &dst_rect, D3DTEXF_POINT)))
+                rt, &dst_rect, scaled ? D3DTEXF_LINEAR : D3DTEXF_POINT)))
         {
             WARN("Failed to copy sample %u, hr %#lx.\n", i, hr);
         }
@@ -408,8 +412,17 @@ static HRESULT WINAPI device_manager_processor_service_CreateSurface(IDirectXVid
 
     for (i = 0; i < backbuffers + 1; ++i)
     {
-        if (FAILED(hr = IDirect3DDevice9_CreateOffscreenPlainSurface(manager->device, width, height, format,
-                pool, &surfaces[i], NULL)))
+        /* VideoProcessBlt() stretches the samples into the target with StretchRect(), which native
+         * d3d9 (and a strict implementation of it) refuses for a destination that is not a render
+         * target. The EVR mixer's targets are the size of the video window, so its output stayed
+         * black. The surfaces stay lockable: the sample copier writes frames into them. */
+        if (dxvaType == DXVA2_VideoProcessorRenderTarget && pool == D3DPOOL_DEFAULT)
+            hr = IDirect3DDevice9_CreateRenderTarget(manager->device, width, height, format,
+                    D3DMULTISAMPLE_NONE, 0, TRUE, &surfaces[i], NULL);
+        else
+            hr = IDirect3DDevice9_CreateOffscreenPlainSurface(manager->device, width, height, format,
+                    pool, &surfaces[i], NULL);
+        if (FAILED(hr))
             break;
     }
 

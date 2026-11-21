@@ -1489,6 +1489,7 @@ static void free_streams(struct wm_reader *reader)
 
     free(reader->streams);
     reader->streams = NULL;
+    reader->stream_count = 0;
 }
 
 static HRESULT init_stream(struct wm_reader *reader)
@@ -1600,28 +1601,51 @@ out_destroy_parser:
     return hr;
 }
 
-static HRESULT reinit_stream(struct wm_reader *reader, bool read_compressed)
+/* A stream reads compressed samples or decoded ones on its own (SetReadStreamSamples is per stream):
+ * the parser is created for compressed output when any stream asks for it, and each stream is
+ * enabled with its own format, the compressed one or the decoded one. A parser that cannot do both
+ * fails to connect, and the reader keeps its streams (see the end). */
+static bool wm_reader_reads_compressed(struct wm_reader *reader)
 {
+    WORD i;
+
+    for (i = 0; i < reader->stream_count; ++i)
+        if (reader->streams[i].read_compressed)
+            return true;
+    return false;
+}
+
+static HRESULT reinit_stream(struct wm_reader *reader)
+{
+    bool read_compressed = wm_reader_reads_compressed(reader);
     wg_parser_t wg_parser;
     HRESULT hr;
     WORD i;
 
-    ReleaseSemaphore(reader->read_sem, 1, NULL);
+    /* After a failed reinit (below) there is no parser, read thread or semaphore to tear down. */
+    if (reader->read_sem)
+        ReleaseSemaphore(reader->read_sem, 1, NULL);
 
     free_stream_buffers(reader);
 
-    wg_parser_disconnect(reader->wg_parser);
+    if (reader->wg_parser)
+        wg_parser_disconnect(reader->wg_parser);
 
-    EnterCriticalSection(&reader->shutdown_cs);
-    reader->read_thread_shutdown = true;
-    LeaveCriticalSection(&reader->shutdown_cs);
-    WaitForSingleObject(reader->read_thread, INFINITE);
-    CloseHandle(reader->read_thread);
-    CloseHandle(reader->read_sem);
+    if (reader->read_thread)
+    {
+        EnterCriticalSection(&reader->shutdown_cs);
+        reader->read_thread_shutdown = true;
+        LeaveCriticalSection(&reader->shutdown_cs);
+        WaitForSingleObject(reader->read_thread, INFINITE);
+        CloseHandle(reader->read_thread);
+    }
+    if (reader->read_sem)
+        CloseHandle(reader->read_sem);
     reader->read_thread = NULL;
     reader->read_sem = NULL;
 
-    wg_parser_destroy(reader->wg_parser);
+    if (reader->wg_parser)
+        wg_parser_destroy(reader->wg_parser);
     reader->wg_parser = 0;
 
     if (!(wg_parser = wg_parser_create(read_compressed)))
@@ -1647,7 +1671,16 @@ static HRESULT reinit_stream(struct wm_reader *reader, bool read_compressed)
         goto out_shutdown_thread;
     }
 
-    assert(reader->stream_count == wg_parser_get_stream_count(reader->wg_parser));
+    /* A parser that exposes the file's streams differently with compressed output fails here,
+     * and the caller goes back to the previous parser. */
+    if (wg_parser_get_stream_count(reader->wg_parser) != reader->stream_count)
+    {
+        ERR("Parser has %u streams, expected %u.\n",
+                wg_parser_get_stream_count(reader->wg_parser), reader->stream_count);
+        wg_parser_disconnect(reader->wg_parser);
+        hr = E_FAIL;
+        goto out_shutdown_thread;
+    }
 
     for (i = 0; i < reader->stream_count; ++i)
     {
@@ -1658,7 +1691,7 @@ static HRESULT reinit_stream(struct wm_reader *reader, bool read_compressed)
         stream->reader = reader;
         wg_parser_stream_get_current_format(stream->wg_stream, &format);
         if (stream->selection == WMT_ON)
-            wg_parser_stream_enable(stream->wg_stream, read_compressed ? &format : &stream->format);
+            wg_parser_stream_enable(stream->wg_stream, stream->read_compressed ? &format : &stream->format);
     }
 
     /* We probably discarded events because streams weren't enabled yet.
@@ -1668,6 +1701,7 @@ static HRESULT reinit_stream(struct wm_reader *reader, bool read_compressed)
     if (WaitForSingleObject(reader->read_sem, INFINITE) != WAIT_OBJECT_0)
     {
         ERR("Failed to wait for read semaphore.\n");
+        hr = E_FAIL;
         goto out_shutdown_thread;
     }
 
@@ -1688,7 +1722,12 @@ out_destroy_parser:
         reader->read_sem = NULL;
     }
     free_stream_buffers(reader);
-    free_streams(reader);
+    /* The streams belong to the open file, not to this parser: the application has their
+     * selection, output format and allocators. Freeing them here left stream_count streams in a
+     * NULL array, and the next call into the reader wrote through it (a KiriKiri movie plugin
+     * that asks for compressed samples). Only the handles into the destroyed parser go. */
+    for (i = 0; i < reader->stream_count; ++i)
+        reader->streams[i].wg_stream = 0;
     wg_parser_destroy(reader->wg_parser);
     reader->wg_parser = 0;
 
@@ -2573,6 +2612,8 @@ static HRESULT WINAPI reader_SetReadStreamSamples(IWMSyncReader2 *iface, WORD st
 {
     struct wm_reader *reader = impl_from_IWMSyncReader2(iface);
     struct wm_stream *stream;
+    bool old_compressed;
+    HRESULT hr;
 
     TRACE("reader %p, stream_index %u, compressed %d.\n", reader, stream_number, compressed);
 
@@ -2584,11 +2625,22 @@ static HRESULT WINAPI reader_SetReadStreamSamples(IWMSyncReader2 *iface, WORD st
         return E_INVALIDARG;
     }
 
+    old_compressed = stream->read_compressed;
     stream->read_compressed = compressed;
-    reinit_stream(reader, compressed);
+    if (FAILED(hr = reinit_stream(reader)))
+    {
+        /* The parser could not serve the new mix of compressed and decoded streams. Go back to
+         * the one that worked, so the reader stays usable, and say so instead of returning S_OK
+         * over a reader without a parser. */
+        ERR("Stream %u: compressed %d is not available, hr %#lx; keeping the previous mode.\n",
+                stream_number, compressed, hr);
+        stream->read_compressed = old_compressed;
+        if (FAILED(reinit_stream(reader)))
+            ERR("Failed to restore the previous parser.\n");
+    }
 
     LeaveCriticalSection(&reader->cs);
-    return S_OK;
+    return hr;
 }
 
 static HRESULT WINAPI reader_SetStreamsSelected(IWMSyncReader2 *iface,

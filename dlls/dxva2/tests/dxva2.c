@@ -70,7 +70,8 @@ static void test_surface_desc(IDirect3DSurface9 *surface)
 
     ok(desc.Format == D3DFMT_X8R8G8B8, "Unexpected format %d.\n", desc.Format);
     ok(desc.Type == D3DRTYPE_SURFACE, "Unexpected type %d.\n", desc.Type);
-    ok(!desc.Usage, "Unexpected usage %ld.\n", desc.Usage);
+    /* Wine creates a render target, which VideoProcessBlt() can stretch into. */
+    todo_wine ok(!desc.Usage, "Unexpected usage %ld.\n", desc.Usage);
     ok(desc.Pool == D3DPOOL_DEFAULT, "Unexpected pool %d.\n", desc.Pool);
     ok(desc.MultiSampleType == D3DMULTISAMPLE_NONE, "Unexpected multisample type %d.\n", desc.MultiSampleType);
     ok(!desc.MultiSampleQuality, "Unexpected multisample quality %ld.\n", desc.MultiSampleQuality);
