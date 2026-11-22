@@ -3991,6 +3991,64 @@ static BOOL madeira_force_builtin_dll( const WCHAR *name )
 }
 
 /***********************************************************************
+ *	madeira_dxc_native
+ *
+ * madeira-duo: with MADEIRA_DXC_NATIVE=1 in the environment, dxcompiler.dll
+ * is taken from system32, where the bundle's ARM64EC build of the same DXC
+ * release (arm64ec-windows/dxcompiler.dll, build/dxc-arm64ec) is linked,
+ * instead of the x64 copy a game ships next to its exe, which would run
+ * emulated. Like the XInput names above, the application directory is never
+ * searched for it then; a load by full path is treated as a load by name.
+ */
+static BOOL madeira_dxc_native( const WCHAR *name )
+{
+    static int native = -1;
+    const WCHAR *base = name, *p;
+
+    for (p = name; *p; p++) if (*p == '\\' || *p == '/') base = p + 1;
+    if (wcsicmp( base, L"dxcompiler.dll" ) && wcsicmp( base, L"dxcompiler" )) return FALSE;
+    if (native < 0)
+    {
+        UNICODE_STRING nm, val;
+        WCHAR buf[8];
+        RtlInitUnicodeString( &nm, L"MADEIRA_DXC_NATIVE" );
+        val.Buffer = buf; val.Length = 0; val.MaximumLength = sizeof(buf);
+        native = (!RtlQueryEnvironmentVariable_U( NULL, &nm, &val ) && val.Length && buf[0] == '1');
+        if (native) ERR( "[dxc-native] dxcompiler.dll is loaded from system32 (MADEIRA_DXC_NATIVE=1)\n" );
+    }
+    return native;
+}
+
+/***********************************************************************
+ *	madeira_xess_builtin
+ *
+ * madeira-duo xess-metalfx: with MADEIRA_XESS_METALFX=1, libxess.dll is
+ * Madeira's (system32, from the bundle's arm64ec-windows), which answers XeSS
+ * with MetalFX temporal upscaling, instead of the game's own Intel DLL: the iOS
+ * loader never replaces an app-folder image with a builtin, so
+ * WINEDLLOVERRIDES cannot do it (PoE2 loaded its 74 MB x64 libxess with
+ * libxess=b, and with libxess= too).
+ */
+static BOOL madeira_xess_builtin( const WCHAR *name )
+{
+    static int on = -1;
+    const WCHAR *base = name, *p;
+
+    for (p = name; *p; p++) if (*p == '\\' || *p == '/') base = p + 1;
+    if (wcsicmp( base, L"libxess.dll" ) && wcsicmp( base, L"libxess" )) return FALSE;
+    if (on < 0)
+    {
+        UNICODE_STRING nm, val;
+        WCHAR buf[8];
+        RtlInitUnicodeString( &nm, L"MADEIRA_XESS_METALFX" );
+        val.Buffer = buf; val.Length = 0; val.MaximumLength = sizeof(buf);
+        on = (!RtlQueryEnvironmentVariable_U( NULL, &nm, &val ) && val.Length && buf[0] == '1');
+        if (on) ERR( "[xess-metalfx] libxess.dll is loaded from system32 (MADEIRA_XESS_METALFX=1)\n" );
+    }
+    return on;
+}
+
+/***********************************************************************
  *	find_dll_file
  *
  * Find the file (or already loaded module) for a given dll name.
@@ -4039,9 +4097,15 @@ static NTSTATUS find_dll_file( const WCHAR *load_path, const WCHAR *libname, UNI
     /* Win 7/2008R2 and up seem to re-enable WoW64 FS redirection when loading libraries */
     RtlWow64EnableFsRedirectionEx( 0, &wow64_old_value );
 
+    if (RtlDetermineDosPathNameType_U( libname ) != RtlPathTypeRelative && madeira_dxc_native( libname ))
+        libname = L"dxcompiler.dll";
+    /* PoE2 loads <game folder>\libxess.dll by its full path */
+    if (RtlDetermineDosPathNameType_U( libname ) != RtlPathTypeRelative && madeira_xess_builtin( libname ))
+        libname = L"libxess.dll";
+
     if (RtlDetermineDosPathNameType_U( libname ) == RtlPathTypeRelative)
     {
-        if (madeira_force_builtin_dll( libname ))
+        if (madeira_force_builtin_dll( libname ) || madeira_dxc_native( libname ) || madeira_xess_builtin( libname ))
         {
             TRACE( "%s: searching system32 only, for the builtin\n", debugstr_w(libname) );
             load_path = system_dir;
